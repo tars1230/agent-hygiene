@@ -24,6 +24,7 @@
 import io
 import json
 import os
+import re
 import sys
 
 HOME = os.path.expanduser("~")
@@ -109,12 +110,44 @@ REQUIRED = {
 }
 
 # 与 agent-hygiene 仓库共享的数字（手抄容易漂移 → 必须机器比对）
+#
+# 🔴 判据用「带上下文的正则」而不是裸子串。
+#    裸子串有三个实测出来的漏报：
+#    ① README 的「共享数字清单」那行本身就含全部数字 → README 正文改了也照样 PASS（平凡成立）
+#    ② SKILL.md:186 的「线程数 ≥20000」是另一个含义 → 句柄下限改错也能「巧合命中」
+#    ③ 语义（分母/口径）完全不在比对范围
+#    → 改为「该数字必须出现在带指定上下文的句子里」，且排除元描述行。
+#
+# expect_in_skills = 应包含该数字的 Skill 名列表。
+#   不在列表里的 skill 不检查（否则会误报「long-running 缺 89.79」这种本该没有的）。
 SHARED_NUMBERS = [
-    ("单实例句柄下限", "20000", ["README.md", "skill/agent-hygiene/SKILL.md"]),
-    ("僵尸占 Process 类", "89.79", ["README.md", "skill/agent-hygiene/SKILL.md"]),
-    ("Weixin 句柄总数", "191435", ["README.md", "skill/agent-hygiene/SKILL.md"]),
-    ("早期速率", "1022", ["README.md", "skill/agent-hygiene/SKILL.md"]),
-    ("复核后速率", "3.2", ["README.md", "skill/agent-hygiene/SKILL.md"]),
+    # (说明, 数字, 上下文正则, 仓库文件列表, 应含此数的 skill 列表)
+    ("单实例句柄下限", "20000",
+     r"(?:绝对下限|下限|SOLO_HANDLES_ABS|句柄\s*[≥>=]+\s*20000|单实例组用\s*20000)",
+     ["README.md", "skill/agent-hygiene/SKILL.md"],
+     ["diagnostic-tool-trust"]),
+    ("僵尸占 Process 类", "89.79",
+     r"(?:89\.79\s*%|占\s*Process|Process\s*类)",
+     ["README.md", "skill/agent-hygiene/SKILL.md"],
+     ["diagnostic-tool-trust"]),
+    ("Weixin 句柄总数", "191435",
+     r"(?:191\s*435|191435)",
+     ["README.md", "skill/agent-hygiene/SKILL.md"],
+     ["diagnostic-tool-trust"]),
+    ("早期速率", "1022",
+     r"(?:1022|1\s*022)",
+     ["README.md", "skill/agent-hygiene/SKILL.md"],
+     ["diagnostic-tool-trust", "long-running-sample-discipline"]),
+    ("复核后速率", "3.2",
+     r"(?:-3\.2|−3\.2|3\.2\s*个/分钟|3\.2/分钟)",
+     ["README.md", "skill/agent-hygiene/SKILL.md"],
+     ["diagnostic-tool-trust", "long-running-sample-discipline"]),
+]
+
+# 元描述行（含数字清单的那行）必须排除，否则检查平凡成立
+META_LINE_PATTERNS = [
+    r"是否仍然对得上",
+    r"与本仓库共享的数字",
 ]
 
 REPO_CANDIDATES = [
@@ -183,6 +216,65 @@ def check_one(name, probes, base):
     return result
 
 
+def _strip_meta_lines(text):
+    """剔除「元描述行」。
+
+    实测漏报：README 里有一行专门列出共享数字清单（"…是否仍然对得上"），
+    它本身就含全部数字 → 用子串判断时，只要这行还在，
+    README 正文里的数字改成任何别的值，检查照样 PASS（平凡成立）。
+    → 必须剔除，否则这个检查等于没做。
+    """
+    keep = []
+    for line in text.split("\n"):
+        if any(re.search(p, line) for p in META_LINE_PATTERNS):
+            continue
+        keep.append(line)
+    return "\n".join(keep)
+
+
+def _count_number_with_context(text, num, ctx_pat):
+    """统计「数字与指定上下文同现」的行数。
+
+    🔴 关键设计：**用行数下限，不是「任意一行命中」**。
+    实测漏报：README 里「20000」出现在两行（83 行「绝对下限 20000」+ 89 行「单实例组用 20000」）。
+    只改掉 83 行 → 89 行仍然命中 → 检查照样 PASS（平凡成立）。
+    → 必须要求**所有**关键上下文句都还在，才能判 PASS。
+    """
+    t = _strip_meta_lines(text)
+    num_pat = re.escape(num).replace(r"\.", r"\s*\.?\s*")
+    hits = []
+    for line in t.split("\n"):
+        has_num = bool(re.search(num_pat, line.replace(" ", "").replace("\u00a0", ""))) \
+            or bool(re.search(num_pat, line))
+        if has_num and re.search(ctx_pat, line):
+            hits.append(line.strip()[:60])
+    return hits
+
+
+# 每个数字在每个文件里**必须**出现的上下文句数量下限。
+# 实测：README 的 20000 有 2 处关键上下文（83 行 + 89 行）；
+#      agent-hygiene/SKILL.md 的 20000 有 2 处（46 行 + 215 行）。
+#      186 行「线程数 ≥20000」是另一个含义，**不算**。
+MIN_CONTEXT_LINES = {
+    "20000": 2,
+    "89.79": 1,
+    "191435": 1,
+    "1022": 1,
+    "3.2": 1,
+}
+
+# Skill 侧各数字必须出现的上下文句数量下限（Skill 里出现次数通常少于仓库）
+MIN_SKILL_CONTEXT_LINES = {
+    ("diagnostic-tool-trust", "20000"): 1,
+    ("diagnostic-tool-trust", "89.79"): 1,
+    ("diagnostic-tool-trust", "191435"): 1,
+    ("diagnostic-tool-trust", "1022"): 1,
+    ("diagnostic-tool-trust", "3.2"): 1,
+    ("long-running-sample-discipline", "1022"): 1,
+    ("long-running-sample-discipline", "3.2"): 1,
+}
+
+
 def check_shared_numbers(skills_src):
     out = {"checked": [], "issues": []}
     repo = find_repo()
@@ -201,34 +293,55 @@ def check_shared_numbers(skills_src):
         out["skipped"] = True
         return out
 
-    skill_text = "\n".join(v for v in skills_src.values() if v)
-
-    for label, num, rels in SHARED_NUMBERS:
-        in_skill = num in skill_text
-        # 🔴 必须是「每个相关文件都含有」，不能用 any()。
-        #    any() 会让「一个文件改了、另一个没改」被掩盖 —— 实测这正是漏报的原因：
-        #    故意把 README 里的 20000 改成 99999，SKILL.md 里仍是 20000，
-        #    any() 判 True → 门禁漏报。分叉必须报错。
+    # skill 侧：逐文件判断（不合并）——合并会让「一个 skill 改了另一个没改」被掩盖
+    for label, num, ctx, rels, expect_in in SHARED_NUMBERS:
+        need = MIN_CONTEXT_LINES.get(num, 1)
         per_file = {}
-        missing = []
+        missing_repo = []
         for rel in rels:
             if rel not in repo_text:
                 per_file[rel] = "not-read"
-                missing.append(rel)
+                missing_repo.append(rel)
                 continue
-            hit = num in repo_text[rel]
-            per_file[rel] = hit
-            if not hit:
-                missing.append(rel)
-        in_repo = bool(rels) and not missing
+            hits = _count_number_with_context(repo_text[rel], num, ctx)
+            ok = len(hits) >= need
+            per_file[rel] = "%d/%d" % (len(hits), need)
+            if not ok:
+                missing_repo.append(rel)
+
+        # skill 侧：只检查「应该带这个数字的 skill」
+        # Skill 里的出现次数通常少于仓库（下限独立设定），
+        # 但**不能是 0** —— 数字整个消失也算漂移。
+        skill_hit = {}
+        missing_skill = []
+        for n in expect_in:
+            t = skills_src.get(n)
+            if t is None:
+                continue
+            hits = _count_number_with_context(t, num, ctx)
+            skill_need = MIN_SKILL_CONTEXT_LINES.get((n, num), 1)
+            ok = len(hits) >= skill_need
+            skill_hit[n] = "%d/%d" % (len(hits), skill_need)
+            if not ok:
+                missing_skill.append(n)
+
+        in_repo = bool(rels) and not missing_repo
         out["checked"].append({
             "label": label, "number": num,
-            "in_skill": in_skill, "in_repo": in_repo, "per_file": per_file,
+            "in_skill": any(skill_hit.values()) if skill_hit else None,
+            "in_repo": in_repo,
+            "per_file": per_file,
+            "per_skill": skill_hit,
         })
-        if in_skill and missing:
+
+        if missing_repo:
             out["issues"].append(
-                "数字 %r（%s）出现在 Skill 里，但仓库中 %s 已无此值 —— 手抄漂移或仓库分叉，需核对"
-                % (num, label, ", ".join(missing)))
+                "数字 %r（%s）在仓库中 %s 未以正确口径出现 —— 手抄漂移或仓库分叉"
+                % (num, label, ", ".join(missing_repo)))
+        if missing_skill:
+            out["issues"].append(
+                "数字 %r（%s）在 Skill %s 中缺失或口径不符 —— Skill 侧手抄漂移"
+                % (num, label, ", ".join(missing_skill)))
     return out
 
 
