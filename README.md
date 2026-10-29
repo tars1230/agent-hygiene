@@ -52,7 +52,7 @@
 
 | 进程 | 线程数 | Suspended | 占比 |
 |---|---|---|---|
-| explorer（泄漏样本） | 96262 | 96127 | **99.85%** |
+| explorer（泄漏样本，pid 13092） | 96262 | 96127 | **99.86%** |
 | System | 325 | 12 | 3.85% |
 | Weixin / msedge / GameViewer 等正常进程 | ≤134 | 0 | **0%** |
 
@@ -116,7 +116,11 @@
 - **Token 61193 个全部是同一个用户 `TARS\Administrator` 的重复副本**（LUID 全同 = `6fa1c`）
 - 全系统扫描（`handle64 -a`，465055 个句柄）确认：这 3 个 pid 被 **15+ 个互不相关的进程**同时持有僵尸句柄，合计 43076 个
 
-**pid 13092 就是那个 explorer.exe 线程泄漏样本**（Private 8436.5MB / 96127 个 Suspended 线程）。它崩溃退出后，多个子进程各留了一份指向它的句柄。
+**pid 13092 就是那个 explorer.exe 线程泄漏样本**。
+原始命令输出（可复核）：`Get-Process explorer` → `Id=13092  PrivMB=8432  WSMB=260.7  Handles=210301  Threads=96262  StartTime=2026/10/24 9:29:57`；
+`$p.Threads | Group-Object ThreadState` → `96267 Wait`；`Group-Object WaitReason` → `96127 Suspended / 135 UserRequest / 5 EventPairLow`。
+（WS 在不同采样点是 260.7MB 与 452MB，WS 会波动；**Private 8432MB 与 96262 线程是稳定值**。）
+它崩溃退出后，多个子进程各留了一份指向它的句柄。
 
 比例验证：**每个僵尸进程对应约 6 个泄漏句柄**（1 Process + 2 Token + 3 Event），合计 172674 / 178033 = **97%**。
 
@@ -267,12 +271,12 @@ Register-ScheduledTask -TaskName "AgentHygiene-Weekly" -Action $act2 -Trigger $t
 |---|---|---|---|---|
 | 1 | 内存紧张，但找不到占内存的进程 | Codex 沙箱 VM 退出不回收（`SavedAsTemplate` 孤儿，`vmmem` 872.8MB 存活 25 小时） | 停 `CodexSandboxService` → 等 `vmmem` 消失 → 起回服务 | 2026-10-22 |
 | 2 | 任务栏出现关不掉的 Chromium 搜索图标 | WorkBuddy 自带 `agent-browser` 拉起的 headless Chromium 残留（16 进程 ≈984MB） | `taskkill /T` 掉 `agent-browser` 宿主 | 2026-10-28 |
-| 3 | 桌面/任务栏变卡，commit 快满，但 explorer「内存」看着不大 | 第三方 shell 扩展在 explorer 里泄漏线程（96262 个线程 / 96127 个 Suspended，Private 8432MB 而 WS 只有 452MB） | 重启 `explorer.exe` | 2026-10-29 |
+| 3 | 桌面/任务栏变卡，commit 快满，但 explorer「内存」看着不大 | 第三方 shell 扩展在 explorer 里泄漏线程（96262 个线程 / 96127 个 Suspended / 210301 个句柄，Private 8432MB 而 WS 只占 260–452MB） | 重启 `explorer.exe` | 2026-10-29 |
 | 4 | 每天固定时间多出一串 git 进程且永不退出 | 计划任务里的 `git push` 因凭据提示被吞而永久挂起（8 天累积 56 进程） | `taskkill` + 修脚本（超时 + `credential.interactive=never` + 显式代理） | 2026-10-29 |
 | 5 | 内存看着正常，但某进程句柄数 17 万 | Weixin 主进程句柄累积未释放（178033 句柄 = 同 exe 中位数 243 的 **732.6 倍**，存活 188 小时）。**分解到类型层后定根因**：29641 个僵尸 Process 句柄指向已退出的 explorer（pid 13092），连带 61193 个重复 Token + 80849 个 Event，占总数 97% | 治本 = 重启 explorer 消掉泄漏源；Weixin 侧默认只报告，`--kill-handle-leak` 才动手 | 2026-10-29 |
 | 6 | playwright 浏览器下载完 3.1GB 但进程不退 | `playwright-cli install-browser` 挂死（CPU=0、无网络连接，链为 sh.exe → node.exe） | `taskkill /T`（配方按**命令行模式**匹配，不是按进程名） | 2026-10-29 |
 
-**配方 3 的关键教训**：explorer 的泄漏**在任务管理器里几乎看不见**——它的 WS 只有 452MB，看「内存」列完全正常；吃掉的是 commit。**必须看线程数/句柄数**（9.6 万线程 / 21 万句柄）。
+**配方 3 的关键教训**：explorer 的泄漏**在任务管理器里几乎看不见**——它的 WS 只有 260–452MB，看「内存」列完全正常；吃掉的是 commit。**必须看线程数/句柄数**（9.6 万线程 / 21 万句柄）。
 
 **配方 5 的关键教训**：句柄泄漏**按 Private 排序的工具必然漏掉**——它的 Private 只有 567MB，排在 Top15 之外。**线程/句柄必须是独立一维**。
 更进一步：**光知道「句柄多」还不是结论**，必须分解到类型层才知道该找谁——配方 5 的根因最终指向 explorer，不是 Weixin 自己。

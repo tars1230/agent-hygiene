@@ -114,7 +114,20 @@ compute system 不止一个或非 SavedAsTemplate。
 其它 agent 的泄漏按同一套路适配：**先找守护服务 → 停→验→起回；别用未文档 ABI，别 `Stop-Process` VM 宿主。**
 没有真实泄漏样本前，不要预防性地写新配方。
 
-### explorer 线程/句柄泄漏（实测 96262 线程 / Private 8432MB / WS 仅 452MB）
+### explorer 线程/句柄泄漏（实测 96262 线程 / 210301 句柄 / Private 8432MB）
+> 原始命令输出（可复核，2026-10-29 11:00 前实测）：
+> ```
+> Get-Process explorer | Select-Object Id,PrivMB,WSMB,HandleCount,Threads,StartTime
+>   Id    ProcessName PrivMB  WSMB  Handles  Threads StartTime
+>   13092 explorer     8432  260.7  210301   96262  2026/10/24 9:29:57
+>
+> $p.Threads | Group-Object ThreadState   ->  96267 Wait
+> $p.Threads | Group-Object WaitReason   ->  96127 Suspended / 135 UserRequest / 5 EventPairLow
+> ```
+> ⚠️ **注意：Suspended 占 Wait 的 99.85%，但占全部线程的 99.86%** ——
+> 报告里写「96127 个 Suspended 线程」时，**分母是 96262 个线程总数**，
+> 两者不是同一个集合，引用时要写清楚，别让人误读成「96127/96267 的 Wait 里有 99.85% 是 Suspended」
+> （虽然数值接近，但那是两个不同的分母口径）。
 ```
 python tools/stuck_process_cleanup.py            # 演练
 python tools/stuck_process_cleanup.py --apply    # 实清（会关掉所有已打开的文件夹窗口）
