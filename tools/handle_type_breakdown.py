@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 # Handle.exe 位置优先级：
 #   1) 环境变量 AGENT_HYGIENE_HANDLE_EXE
@@ -137,6 +138,10 @@ def main():
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--top", type=int, default=20, help="类型榜条数")
     ap.add_argument("--handle-exe", help="指定 handle64.exe 路径")
+    ap.add_argument("--diff", action="store_true",
+                    help="连续采样并对比，定位『增长源』（判稳态 vs 持续增长）")
+    ap.add_argument("--interval", type=int, default=60, help="--diff 的采样间隔秒数")
+    ap.add_argument("--rounds", type=int, default=8, help="--diff 的采样轮数")
     a = ap.parse_args()
 
     if sys.platform != "win32":
@@ -154,6 +159,17 @@ def main():
         return 2
 
     ps = ps_exe()
+
+    if a.diff:
+        try:
+            return run_diff(exe, a.pid, ps, max(5, a.interval), max(2, a.rounds))
+        except subprocess.TimeoutExpired:
+            print("[fail] Handle 执行超时")
+            return 1
+        except Exception as e:
+            print("[fail] %s" % e)
+            return 1
+
     truth = process_handle_count(ps, a.pid)
     try:
         text, lines = list_handles(exe, a.pid)
@@ -203,6 +219,93 @@ def main():
             print("       pid=%-8s %6d 个句柄" % (pid_k, cnt))
         print("     判读: 这些进程已退出，但句柄仍被持有且从未 CloseHandle")
         print("           -> 典型的 DuplicateHandle/CreateProcess 后未清理。")
+    return 0
+
+
+def snapshot(exe, pid, ps):
+    """取一次完整快照，供 diff 用。"""
+    _, lines = list_handles(exe, pid)
+    types, proc_refs = parse_types(lines)
+    truth = process_handle_count(ps, pid)
+    return {
+        "ts": time.time(),
+        "total": len(lines),
+        "truth": truth,
+        "types": types,
+        "gone": proc_refs.get("__gone__", 0),
+        "proc_refs": proc_refs,
+    }
+
+
+def diff_snapshots(a, b):
+    """对比两次快照，回答「增长源在哪」。"""
+    out = []
+    out.append("  总句柄: %d -> %d  (%+d)" % (a["total"], b["total"], b["total"] - a["total"]))
+    out.append("  僵尸句柄(指向已退出进程): %d -> %d  (%+d)"
+               % (a["gone"], b["gone"], b["gone"] - a["gone"]))
+    dt = b["total"] - a["total"]
+    dg = b["gone"] - a["gone"]
+    out.append("")
+    out.append("  %-22s %10s %10s %10s" % ("类型", "前", "后", "Δ"))
+    keys = set(a["types"]) | set(b["types"])
+    rows = []
+    for k in keys:
+        d = b["types"].get(k, 0) - a["types"].get(k, 0)
+        if d:
+            rows.append((d, k, a["types"].get(k, 0), b["types"].get(k, 0)))
+    rows.sort(reverse=True)
+    for d, k, av, bv in rows[:12]:
+        out.append("  %-22s %10d %10d %+10d" % (k, av, bv, d))
+
+    out.append("")
+    if dg == 0 and dt != 0:
+        out.append("  🔴 判读: **僵尸句柄数不变，但总数在涨** -> 增长源是**存活对象**的句柄")
+        out.append("     （如频繁创建/退出的子进程容器，创建了却没 CloseHandle）。")
+        out.append("     处置含义: 重启只能回收**存量**，治本要关掉触发频繁创建的行为。")
+    elif dg != 0 and dt != 0 and abs(dg) >= abs(dt) * 0.5:
+        out.append("  🔴 判读: 增长**主要来自僵尸句柄** -> 泄漏源是某个已退出的进程")
+        out.append("     （查下面的泄漏源 pid 分布，治本在那个源）。")
+    else:
+        out.append("  判读: 僵尸与存活的增长混合，需看上表逐类型 Δ。")
+    # Δ 比例（以 Process 为基准）
+    dp = b["types"].get("Process", 0) - a["types"].get("Process", 0)
+    if dp > 0:
+        out.append("")
+        out.append("  Δ 比例（以 Process 为基准，+1 Process 配套多少其它类型）:")
+        for k in ("Event", "Token", "Key"):
+            d = b["types"].get(k, 0) - a["types"].get(k, 0)
+            if d:
+                out.append("    %-8s %.2f" % (k, d / float(dp)))
+    return "\n".join(out)
+
+
+def run_diff(exe, pid, ps, interval, rounds):
+    """连续采样并对比，捕捉「间歇性突跳」。"""
+    snaps = []
+    for i in range(rounds):
+        s = snapshot(exe, pid, ps)
+        snaps.append(s)
+        print("[%d] 总句柄=%-8d 僵尸=%-8d 类型: %s"
+              % (i, s["total"], s["gone"],
+                 " ".join("%s=%d" % (k, v)
+                          for k, v in sorted(s["types"].items(), key=lambda kv: -kv[1])[:3])),
+              flush=True)
+        if i < rounds - 1:
+            time.sleep(interval)
+    print()
+    print("=== 逐段增量 ===")
+    for i in range(1, len(snaps)):
+        d = snaps[i]["total"] - snaps[i - 1]["total"]
+        dg = snaps[i]["gone"] - snaps[i - 1]["gone"]
+        print("  [%d->%d] Δ总=%+7d  Δ僵尸=%+7d  %s"
+              % (i - 1, i, d, dg, "← 突跳" if d > 500 else ""))
+    print()
+    print("=== 首尾对比 ===")
+    print(diff_snapshots(snaps[0], snaps[-1]))
+    print()
+    print("  🔴 判读纪律: 单段平坦**不能**判定「稳态」。")
+    print("     必须采样覆盖到至少一个突跳周期（实测 Weixin 前 7 分钟平坦，"
+          "第 8 分钟 +2053 突跳，随后 +675/分钟）。")
     return 0
 
 
