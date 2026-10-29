@@ -182,7 +182,7 @@ $ "C:\...\.workbuddy\binaries\python\versions\3.13.12.old.19168\python.exe" \
 
 ### C. 本项目独有的能力：句柄类问题在「用前」完全看不见
 
-**使用前**：任务管理器按内存排序，Weixin 排第几根本不重要（它的 Private 567MB，不突出）。
+**使用前**：任务管理器按内存排序，Weixin 排第几根本不重要（它的 Private 509–586MB，不突出）。
 
 **使用后**：
 - Weixin 主进程 **191435 个句柄**
