@@ -103,8 +103,20 @@ Register-ScheduledTask -TaskName "AgentHygiene-Weekly" -Action $act2 -Trigger $t
 |---|---|---|
 | `tools/agent_hygiene_audit.py` | 体检 + 对比报告 | 普通 |
 | `tools/codex_sandbox_cleanup.py` | Codex 沙箱泄漏定点回收 | 管理员 |
+| `tools/stuck_process_cleanup.py` | 挂死进程回收（explorer 线程泄漏 / git 挂死链） | 管理员 |
 | `tools/hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | 管理员 |
 | `tools/trim_experiment.py` | 复现「trim 只降 WS 不降 Private」的实验脚本 | 普通 |
+
+## 已验证的泄漏配方（都有真实样本）
+
+| # | 症状 | 根因 | 处置 | 样本 |
+|---|---|---|---|---|
+| 1 | 内存紧张，但找不到占内存的进程 | Codex 沙箱 VM 退出不回收（`SavedAsTemplate` 孤儿，`vmmem` 872.8MB 存活 25 小时） | 停 `CodexSandboxService` → 等 `vmmem` 消失 → 起回服务 | 2026-10-22 |
+| 2 | 任务栏出现关不掉的 Chromium 搜索图标 | WorkBuddy 自带 `agent-browser` 拉起的 headless Chromium 残留（16 进程 ≈984MB） | `taskkill /T` 掉 `agent-browser` 宿主 | 2026-10-28 |
+| 3 | 桌面/任务栏变卡，commit 快满，但 explorer「内存」看着不大 | 第三方 shell 扩展在 explorer 里泄漏线程（96262 个线程 / 96127 个 Suspended，Private 8432MB 而 WS 只有 452MB） | 重启 `explorer.exe` | 2026-10-29 |
+| 4 | 每天固定时间多出一串 git 进程且永不退出 | 计划任务里的 `git push` 因凭据提示被吞而永久挂起（8 天累积 56 进程） | `taskkill` + 修脚本（超时 + `credential.interactive=never` + 显式代理） | 2026-10-29 |
+
+**配方 3 的关键教训**：explorer 的泄漏**在任务管理器里几乎看不见**——它的 WS 只有 452MB，看「内存」列完全正常；吃掉的是 commit。**必须看线程数/句柄数**（9.6 万线程 / 21 万句柄）。
 
 ## Mac 版？
 

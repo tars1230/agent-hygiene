@@ -263,9 +263,14 @@ def hcs_info():
 
 
 # ---------------- 服务操作 ----------------
+# 绝对路径: 受控环境(IDE 托管的 bash)PATH 可能不含 powershell, 裸名字会 WinError 2
+PS_EXE = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                      "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
 def _ps(cmd, timeout=90):
     p = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+        [PS_EXE, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
          "-Command", cmd],
         capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",

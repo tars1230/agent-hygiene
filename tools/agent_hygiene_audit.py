@@ -125,13 +125,19 @@ def proc_priv_mb(pid):
         k32.CloseHandle(h)
 
 
+# 绝对路径: 某些受控环境(IDE 托管的 bash)PATH 不含 System32\WindowsPowerShell,
+# 裸 "powershell" 会 WinError 2 —— 这也是第一用户兼容性 bug
+PS_EXE = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                      "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+
 def wmi_processes():
     """[{pid,ppid,name,exe,cmd}]  —— 走一次 WMI 拿命令行, 体检类工具可以慢"""
     cmd = ("Get-CimInstance Win32_Process | "
            "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | "
            "ConvertTo-Json -Compress -Depth 2")
     try:
-        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+        p = subprocess.run([PS_EXE, "-NoProfile", "-NonInteractive", "-Command", cmd],
                            capture_output=True, text=True, timeout=120,
                            encoding="utf-8", errors="replace")
         data = json.loads(p.stdout or "[]")
@@ -199,7 +205,7 @@ def mem_global():
     perf = None
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            [PS_EXE, "-NoProfile", "-Command",
              "$p=Get-CimInstance Win32_PerfRawData_PerfOS_Memory; "
              "'{0},{1}' -f ($p.CommittedBytes/1MB),($p.CommitLimit/1MB)"],
             capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")

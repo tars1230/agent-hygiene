@@ -25,6 +25,12 @@ Windows 工作站做定期体检。
    差值法推出的归属（「A→B 差了 250MB，一定是 X」）必须单独量过才能写进结论。
 8. **回收量与可用内存增量要分开报**。实测：释放 872.8MB 的当天可用只涨 38MB，
    因为同窗口别的进程涨了 2.5GB——单点收益必须在静默窗口测，且不承诺「释放 X 内存」。
+9. 🔴 **explorer 这类进程的泄漏在任务管理器里几乎看不见**。实测样本：Private 8432MB 而
+   WS 只有 452MB，96127 个线程处于 Suspended 状态——**看「内存」列完全正常，吃掉的是 commit**。
+   **必须看线程数/句柄数**，阈值：线程 >2 万即异常。只看 WS/「内存」列会漏掉这类最大泄漏。
+10. 🔴 **「计划任务失败」和「进程挂死」是两个独立 bug**，别混成一个。实测：DailyBriefing1745
+    连续 8 天 LastTaskResult=267014（SCHED_E_TASK_NOT_RUN，因为计划任务上下文里 `git` 不在 PATH，
+    报 FileNotFoundError）；同时又有另一批 git 进程因凭据提示被吞而永久挂起。修的时候两个都要改。
 
 ## 工具（本仓库 `tools/` 目录）
 
@@ -32,6 +38,7 @@ Windows 工作站做定期体检。
 |---|---|---|
 | `agent_hygiene_audit.py` | 体检：内存压力 + 家族 Top + 孤儿/HCS/shim + 空转 vs 干活 + 对比 | **只读** |
 | `codex_sandbox_cleanup.py` | Codex 沙箱 VM 泄漏回收（两档 + 四守卫 + 年龄门槛） | 会动服务，需 `--apply` |
+| `stuck_process_cleanup.py` | 挂死进程回收（explorer 线程泄漏 / git 挂死链） | 会杀进程，需 `--apply` |
 | `hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | list/props 只读 |
 | `trim_experiment.py` | 复现「trim 只降 WS 不降 Private」 | 只读 |
 
@@ -57,6 +64,28 @@ python tools/codex_sandbox_cleanup.py --apply    # 实清（档1停CodexSandboxS
 compute system 不止一个或非 SavedAsTemplate。
 其它 agent 的泄漏按同一套路适配：**先找守护服务 → 停→验→起回；别用未文档 ABI，别 `Stop-Process` VM 宿主。**
 没有真实泄漏样本前，不要预防性地写新配方。
+
+### explorer 线程/句柄泄漏（实测 96262 线程 / Private 8432MB / WS 仅 452MB）
+```
+python tools/stuck_process_cleanup.py            # 演练
+python tools/stuck_process_cleanup.py --apply    # 实清（会关掉所有已打开的文件夹窗口）
+```
+判据：线程数 ≥20000 且存活 ≥120 分钟。根因是第三方 shell 扩展（IDM / WPS qingnse / WeType / 7-zip
+都是嫌疑，但**没有硬证据指向某一个**，不猜）。`NtQueryInformationThread` 反查线程归属在本机被拒
+（STATUS_ACCESS_DENIED 0xC0000022），所以不做精确归因，直接重启 explorer。
+⚠️ 重启 explorer 会关闭所有文件夹窗口——动手前要告知用户。
+
+### 计划任务遗留的 git 挂死链（实测 8 天累积 56 进程）
+```
+python tools/stuck_process_cleanup.py --apply
+```
+判据：git 家族进程存活 ≥60 分钟 **且 CPU 增量 <1%**（在 push 的真实任务会被跳过）。
+根因：全局 `url.insteadOf` 把 github.com 改写到 gh-proxy.com，GCM 无该域凭据，
+凭据提示在计划任务上下文里被吞 → git 永久等待。**根治要改根因，不只是杀进程**：
+① remote 用 `https://github.com:443/<owner>/<repo>.git`（不命中 insteadOf 前缀匹配）
+② 脚本里 `git -c credential.interactive=never push` + `timeout=120`
+③ git 不读 Windows 系统代理 → 必须显式 `-c http.proxy=http://127.0.0.1:<port>`
+④ 脚本必须**失败时返回非零退出码**，否则计划任务 LastTaskResult=0 = 失败被完全吞掉
 
 ## 输出格式要求
 
