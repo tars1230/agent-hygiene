@@ -46,6 +46,18 @@ Windows 工作站做定期体检。
     `10/21/2026 15:10:32`**，Python `fromisoformat` 解析不了 → 返回 None → 存活时长算成 0 →
     所有「存活时长」守卫形同虚设。必须显式 `$c.ToString('yyyy-MM-ddTHH:mm:ss')`。
     （本项目真实踩过：Weixin 存活 187 小时却报「存活仅 0 分钟」。）
+15. 🔴 **「句柄多」不是可行动结论，必须分解到类型层才知道该找谁**。
+    实测 Weixin 主进程 178033 个句柄，分解后是：
+    `Event 80850 (45.4%) + Token 61193 (34.4%) + Process 30632 (17.2%)`，
+    其中 **29641 个 Process 句柄指向「已退出」的子进程**（pid 13092 / 20764 / 425444），
+    且 61193 个 Token **全部是同一用户 `TARS\Administrator` 的重复副本**（LUID 相同）。
+    → 这不是「内存不够」，是「每开一个子进程就 DuplicateHandle 一份令牌、进程退出后不 CloseHandle」。
+    Event / Token / Process / Key / File 的归属与处置完全不同，不分解就没法派单。
+16. 🔴 **Sysinternals Handle 默认只列「有名字」的句柄，不加 `-a` 会得出完全相反的结论**。
+    实测：Weixin 主进程真实 178033 个句柄，`handle64.exe -p <pid>`（默认）只输出 **487 行**，
+    最大句柄值仅到 0xFB4(4020) —— 看着像句柄很少，实际是**只枚举了前 4020 号槽位**。
+    必须 `handle64.exe -p <pid> -a`，并用 `Get-Process` 的 HandleCount **交叉校验行数**
+    （本项目实测一致 = 178033 = 178033；枚举耗时长时两次采样会差几个，属正常采样时序差）。
 
 ## 工具（本仓库 `tools/` 目录）
 
@@ -53,6 +65,7 @@ Windows 工作站做定期体检。
 |---|---|---|
 | `agent_hygiene_audit.py` | 体检：内存压力 + 家族 Top + **线程/句柄维度** + 孤儿/HCS/shim + 空转 vs 干活 + 对比 | **只读** |
 | `thread_handle_probe.py` | 线程/句柄探测（一次 PS 调用取全表，~360ms）+ 中位数倍数判据 | **只读** |
+| `handle_type_breakdown.py` | 句柄**类型分解**（Event/Token/Process… + 僵尸进程句柄定位），把「句柄多」变成根因 | **只读**，需 Sysinternals Handle |
 | `codex_sandbox_cleanup.py` | Codex 沙箱 VM 泄漏回收（两档 + 四守卫 + 年龄门槛） | 会动服务，需 `--apply` |
 | `stuck_process_cleanup.py` | 挂死进程回收（explorer 线程泄漏 / 挂死命令行链 / 句柄泄漏） | 会杀进程，需 `--apply` |
 | `hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | list/props 只读 |
@@ -64,7 +77,8 @@ Windows 工作站做定期体检。
 
 1. **先体检**：`python tools/agent_hygiene_audit.py --top 15`（约 30 秒）。
    报告第 4b 节是**线程/句柄维度**——它独立于 Private 排序，专门抓「Private 不大但
-   句柄/线程爆了」的那一类。
+   句柄/线程爆了」的那一类；第 4c 节是**句柄类型分解**（需装 Sysinternals Handle），
+   把「句柄多」变成可行动的根因。
 2. **读报告，按判定说话**：
    - 「在干活(CPU>1%)」→ 不动，如实告知用户这是正在工作的成本。
    - 「空闲/阻塞等待 + Private 大」→ 是缓存/等待，回收收益看 Private，且会立刻被其他进程吃掉。
@@ -111,16 +125,38 @@ python tools/stuck_process_cleanup.py --apply    # 实清
 ③ git 不读 Windows 系统代理 → 必须显式 `-c http.proxy=http://127.0.0.1:<port>`
 ④ 脚本必须**失败时返回非零退出码**，否则计划任务 LastTaskResult=0 = 失败被完全吞掉
 
-### 句柄泄漏（实测 Weixin 主进程 177790 句柄 / 同 exe 中位数的 731.6 倍）
+### 句柄泄漏（实测 Weixin 主进程 178033 句柄 / 同 exe 中位数的 732.6 倍）
 ```
 python tools/stuck_process_cleanup.py            # 演练（只报告）
 python tools/stuck_process_cleanup.py --apply --kill-handle-leak   # 实清（不可逆！）
+python tools/handle_type_breakdown.py 28208       # 句柄类型分解（定根因）
 ```
 判据：句柄 ≥50000 **且** 相对同 exe 中位数 ≥20 倍 **且** CPU 总增量 <1% **且** 存活 ≥60 分钟。
 🔴 **这个配方默认只报告不杀**，与前两个不同：杀 explorer 只是关文件夹窗口（可恢复），
 杀 Weixin 主进程会丢失**登录态 / 未发送消息 / 小程序容器**——代价不可逆。
 所以必须显式加 `--kill-handle-leak` 才动手，且仍受全部守卫约束。
 实测中它正确地**放过了 WorkBuddy 宿主**（51527 句柄 = 同 exe 中位数 153 倍，但 CPU 5.8% 在干活）。
+
+**已定根因（2026-10-29 实测到句柄类型层，不是推测）**：
+Weixin 主进程 178033 个句柄的构成 =
+`Event 80849 (45.4%) + Token 61193 (34.4%) + Process 30632 (17.2%) + Key 3752 (2.1%) + 其余 700`。
+- **Process 30632 个里 29641 个（96.8%）指向「已退出」的进程**，
+  泄漏源只有 3 个 pid：**13092 / 20764 / 425444**。
+- **Token 61193 个全部是同一个用户 `TARS\Administrator` 的重复副本**（LUID 全同 = `6fa1c`）。
+- 全系统扫描（`handle64 -a`，465055 个句柄）确认：**这 3 个 pid 被 15+ 个互不相关的进程**
+  同时持有僵尸句柄（Weixin 28208 / WorkBuddy 404204 / 11788 / WeChatAppEx 16396 / …），
+  合计 43076 个 —— **不是单个应用的 bug，是共享资源的泄漏被所有使用者分摊**。
+- **pid 13092 就是那个 explorer.exe 线程泄漏样本**（Private 8436.5MB / 96127 个 Suspended 线程，
+  见报告 hygiene-20261029-092521.md 第 43 行）。它崩溃退出后，多个子进程各留了一份指向它的句柄。
+- 比例验证：**每个僵尸进程对应约 6 个泄漏句柄**（1 Process + 2 Token + 3 Event），
+  合计 172674 / 178033 = **97%**。→ 结论：**泄漏源就是「explorer 泄漏导致子进程句柄不释放」，
+  不是 Weixin 自身逻辑有 bug**。
+- 时间序列实测（每分钟采样）：178028 → 178037 → 稳定在 178033，**是稳态高水位，不是持续增长**。
+  → 说明泄漏早已饱和，重启进程即可回收，重启 explorer 才是治本。
+
+**这条的价值**：只看「句柄数」只能得出「Weixin 有问题，杀了吧」；
+分解到类型层才得出「是 explorer 泄漏的连带后果，治本在 explorer + 重启 Weixin」。
+**这就是本工具比 SysWatch 等竞品多出来的那一层。**
 
 ## 与同类工具的差异（为什么不用现成的）
 
@@ -137,13 +173,22 @@ python tools/stuck_process_cleanup.py --apply --kill-handle-leak   # 实清（�
 
 **我们独有、现成项目都没有的组合**：
 Private/commit 口径 + **线程/句柄独立维度** + **相对同 exe 中位数倍数**判据（消固定阈值误报）
-+ **CPU 总增量交叉验证**（区分在干活 vs 泄漏）+ 配方制定点回收 + 只读体检 + 计划任务闭环。
++ **CPU 总增量交叉验证**（区分在干活 vs 泄漏）+ **句柄类型分解定位根因**
++ 配方制定点回收 + 只读体检 + 计划任务闭环。
+
+🔴 **句柄类型分解是最大的差异化点**。所有竞品最多只能告诉你「这个进程句柄很多」，
+本项目能告诉你「**是哪种句柄、泄漏源是哪些已退出的 pid、被多少个进程分摊**」。
+实测价值：把「Weixin 178033 句柄，杀了吧」变成
+「explorer(pid 13092) 泄漏崩溃导致 15+ 个进程各留僵尸句柄，治本在 explorer」。
+这个结论**不可能**从任何竞品的输出里得到。
 
 **从它们借鉴的**：
 - SysWatch 的「线程/句柄维度」思路 → 变成我们体检报告的第 4b 节（但判据换成中位数倍数）
 - wtop 的「线程/句柄面板」呈现方式 → 变成 Top 线程 / Top 句柄两张榜
 - WinMemoryCleaner 的「排除列表 / 阈值分级」产品形态 → 变成守卫 + 分级阈值
 - Process Hacker 的「进程树 + 句柄检查」→ 变成孤儿判定与家族分组
+- **Process Hacker 的「查看句柄详情」→ 变成 Sysinternals Handle 的类型分解（`handle_type_breakdown.py`），
+  但加了三件它们没有的：`-a` 全量枚举的坑位警告、与 Get-Process 的交叉校验、僵尸进程句柄聚类**
 
 ## 输出格式要求
 

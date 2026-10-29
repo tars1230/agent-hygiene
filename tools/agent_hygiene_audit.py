@@ -512,6 +512,68 @@ def main():
             else:
                 out("- 无异常候选（线程 ≥%d 或 句柄 ≥%d，且相对同 exe 中位数 ≥%.0fx）"
                     % (thp.MIN_THREADS_ABS, thp.MIN_HANDLES_ABS, thp.BURST_RATIO))
+
+            # ---- 4c 句柄类型分解（把「句柄多」变成可行动的根因）----
+            # 🔴 为什么需要: 光知道「178029 个句柄」不是可行动结论。同样 10 万句柄,
+            #    Event/Token/Process/Key 的归属与处置完全不同。分解到类型层才知道该找谁。
+            #    只对句柄异常候选跑(枚举 18 万句柄要几秒), 不对全表跑。
+            handle_cands = [f for f in findings if f["kind"] == "handle"]
+            if handle_cands:
+                try:
+                    import handle_type_breakdown as htb
+                    htb_exe = htb.find_handle_exe()
+                    if not htb_exe:
+                        out()
+                        out("### 4c 句柄类型分解")
+                        out()
+                        out("- [skip] 未安装 Sysinternals Handle，跳过类型分解。")
+                        out("  获取: https://download.sysinternals.com/files/Handle.zip → "
+                            "解压到 %s\\_vendor\\Handle\\handle64.exe"
+                            % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                        out("  手动查看: python tools/handle_type_breakdown.py <pid>")
+                    else:
+                        out()
+                        out("### 4c 句柄类型分解（把「句柄多」变成可行动的根因）")
+                        out()
+                        out("- 工具: Sysinternals Handle `-p <pid> -a`")
+                        out("- 🔴 必须加 `-a`: 默认只列**有名字**的句柄。实测 Weixin 主进程")
+                        out("  178033 个句柄，默认输出仅 **487 行**（只枚举到 4020 号槽位）——")
+                        out("  拿默认输出下结论会得出完全相反的判断。")
+                        for f in handle_cands[:3]:
+                            pid = int(f["pid"])
+                            out()
+                            out("#### pid=%d (%s) 句柄=%d" % (pid, f["name"], f["handles"]))
+                            try:
+                                _, hlines = htb.list_handles(htb_exe, pid)
+                                htypes, hprocs = htb.parse_types(hlines)
+                                truth = htb.process_handle_count(htb.ps_exe(), pid)
+                                out("- Handle -a 列出 %d 个；Get-Process 报告 %s 个 %s"
+                                    % (len(hlines),
+                                       truth if truth is not None else "?",
+                                       "（一致 ✓）" if truth == len(hlines) else "（不一致 ✗）"))
+                                out()
+                                out("| 句柄类型 | 数量 | 占比 |")
+                                out("|---|---|---|")
+                                tot = len(hlines) or 1
+                                for t, c in sorted(htypes.items(), key=lambda kv: -kv[1])[:8]:
+                                    out("| %s | %d | %.2f%% |" % (t, c, c * 100.0 / tot))
+                                gone = hprocs.get("__gone__", 0)
+                                if gone:
+                                    out()
+                                    out("- 🔴 指向**已退出进程**的僵尸句柄 **%d 个 (%.2f%%)**"
+                                        % (gone, gone * 100.0 / tot))
+                                    refs = sorted(((k, v) for k, v in hprocs.items()
+                                                   if k != "__gone__"), key=lambda kv: -kv[1])[:5]
+                                    out("  泄漏源 pid: " + ", ".join(
+                                        "%s(%d)" % (k, v) for k, v in refs))
+                                    out("  → 这些进程已退出，但句柄仍被持有且从未 CloseHandle")
+                            except Exception as e:
+                                out("- [warn] 分解失败: %s" % e)
+                except Exception as e:
+                    out()
+                    out("### 4c 句柄类型分解")
+                    out()
+                    out("- [warn] %s" % e)
     except Exception as e:
         out("- [warn] 线程/句柄维度异常: %s" % e)
 

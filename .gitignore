@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Sysinternals Handle: 微软专有工具, 不随本 MIT 仓库分发。
+# 获取: https://download.sysinternals.com/files/Handle.zip -> 解压到 _vendor/Handle/
+# 或设环境变量 AGENT_HYGIENE_HANDLE_EXE 指向 handle64.exe
+_vendor/
