@@ -352,6 +352,26 @@ Register-ScheduledTask -TaskName "AgentHygiene-Weekly" -Action $act2 -Trigger $t
 
 `skill/agent-hygiene/SKILL.md` 是给 agent 用的说明书（铁律、工作流、配方、竞品对比、输出格式）。拷到 `~/.workbuddy/skills/agent-hygiene/`（或对应 skill 目录）后，对话里说「按 agent-hygiene 查一下内存」即可。
 
+### 配套的两个纪律 Skill（通用方法论，与本项目解耦）
+
+| Skill | 解决什么 | 何时触发 |
+|---|---|---|
+| `skill/diagnostic-tool-trust/` | **工具可信度**：七道检查（跑了吗 / 源对吗 / 口径对吗 / 有没有静默降级 / 参照系对吗 / 绑窗口了吗 / 数字能机器复核吗） | 拿到工具输出、准备下结论前 |
+| `skill/long-running-sample-discipline/` | **长跑采样**：增量落盘 / 结论绑采样窗口 / 突跳用速率中位数判 / 稳态-增长-突跳三态 | 开始设计采样方案时 |
+
+两者**独立但成对发布**（决策依据见 [`docs/skill-consolidation-plan.md`](docs/skill-consolidation-plan.md)）——
+一个管「结果可不可信」，一个管「样本够不够」，判据集合交集为 0。
+
+共用一个机器门禁，防各自腐化 + 防手抄数字漂移：
+
+```bash
+python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
+# VERDICT: PASS（0 项警告）   退出码 0 = 全一致
+```
+
+三道检查：① 关键判据还在不在 ② 基准源与所有副本是否逐字节一致
+③ 与本仓库共享的数字（20000 / 89.79 / 191435 / 1022 / 3.2）是否仍然对得上。
+
 ## 工具一览
 
 | 工具 | 用途 | 权限 |
