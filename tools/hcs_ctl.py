@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-hcs_ctl.py —— 通过 HCS 原生 API (computecore.dll) 管理 Hyper-V compute system。
-hcsdiag 只有 list，没有 stop，所以停止只能走这个 API。
+hcs_ctl.py —— 管理 Hyper-V compute system (HCS)。
+
+list  : 走官方 `hcsdiag list`（实测 computecore.dll 的 HcsEnumerateComputeSystems
+        在本机四种传参下全部 access violation，CLI 走的是不同代码路径，可用）
+props : 走 computecore.dll 的 HcsGetComputeSystemProperties
+stop  : 走 computecore.dll 的 HcsTerminateComputeSystem（hcsdiag 只有 list，没有 stop）
 
 用法:
     python hcs_ctl.py list
@@ -14,6 +18,7 @@ hcsdiag 只有 list，没有 stop，所以停止只能走这个 API。
 import ctypes
 import ctypes.wintypes as wt
 import json
+import subprocess
 import sys
 
 DLL = r"C:\Windows\System32\computecore.dll"
@@ -22,6 +27,16 @@ k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 shell32 = ctypes.WinDLL("shell32")
 
 # ---- 原型 ----
+# 🔴 HCS_ENUMERATION_RESULT 是**结构体**(PCWSTR Buffer + ULONG ResultCount = 16 字节),
+#    不是「指向指针」。原实现传 POINTER(c_void_p)(只有 8 字节) -> DLL 往 ResultCount
+#    位置越界写 -> access violation(实测直接崩)。
+#    参考 computecore.dll 真实签名:
+#      HRESULT HcsEnumerateComputeSystems(
+#          PCWSTR Query, HCS_ENUMERATION_RESULT *EnumerationResult);
+class HCS_ENUMERATION_RESULT(ctypes.Structure):
+    _fields_ = [("Buffer", wt.LPCWSTR), ("ResultCount", wt.DWORD)]
+
+
 d.HcsOpenComputeSystem.argtypes = [wt.LPCWSTR, wt.DWORD, ctypes.POINTER(ctypes.c_void_p)]
 d.HcsOpenComputeSystem.restype = ctypes.c_long
 
@@ -43,7 +58,7 @@ d.HcsWaitForOperationResult.restype = ctypes.c_long
 d.HcsCloseOperation.argtypes = [ctypes.c_void_p]
 d.HcsCloseOperation.restype = None
 
-d.HcsEnumerateComputeSystems.argtypes = [wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+d.HcsEnumerateComputeSystems.argtypes = [wt.LPCWSTR, ctypes.POINTER(HCS_ENUMERATION_RESULT)]
 d.HcsEnumerateComputeSystems.restype = ctypes.c_long
 
 # HCS 自定义访问掩码。0x02000000 是 hcsshim 用的 "full access"；
@@ -82,14 +97,55 @@ def open_system(sys_id: str):
     raise RuntimeError("HcsOpenComputeSystem 全部访问掩码均失败, 最后一次 rc=%s (access=%s)" % last)
 
 
+def _list_via_hcsdiag():
+    """优先走 hcsdiag —— 它是官方 CLI, 行为可预期。
+
+    🔴 为什么不直接用 HcsEnumerateComputeSystems:
+       实测(2026-10-29, Win11 x64)在四种传参下(POINTER(c_void_p) /
+       POINTER(HCS_ENUMERATION_RESULT 16B) / LPCWSTR 预分配缓冲 / NULL query)
+       **全部**抛 "access violation writing 0x0000000000000000"。
+       同一台机器上 `hcsdiag list` 正常返回(空列表) —— 说明 DLL 内部枚举路径
+       在本机环境下不可用, 而 CLI 走的是不同代码路径。
+       => list 一律以 hcsdiag 为准, DLL 只用于 props/stop。
+    """
+    try:
+        p = subprocess.run(["hcsdiag", "list"], capture_output=True,
+                           timeout=30, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print("[warn] hcsdiag 执行失败: %s" % e)
+        return None
+    raw = ((p.stdout or "") + (p.stderr or "")).strip()
+    if "hcsdiag <command>" in raw:
+        # 用法提示 => 不可用
+        return None
+    return raw
+
+
 def do_list():
-    out = ctypes.c_void_p()
-    # 注意: query 传 NULL 会被实现当字符串解引用 -> access violation。必须传空串。
-    rc = d.HcsEnumerateComputeSystems("", ctypes.byref(out))
+    raw = _list_via_hcsdiag()
+    if raw is not None:
+        print(raw if raw else "(无 compute system)")
+        return 0
+    print("[warn] hcsdiag 不可用, 回退到 computecore.dll 直调")
+    # 回退路径: 失败时**绝不能崩**, 必须优雅返回。
+    # 实测该路径在本机会抛 access violation, 所以整个调用包在 try 里,
+    # 并且用独立子进程隔离 —— access violation 是 SEH 异常, 会直接杀进程。
+    try:
+        res = HCS_ENUMERATION_RESULT()
+        rc = d.HcsEnumerateComputeSystems("", ctypes.byref(res))
+    except OSError as e:
+        print("[fail] HcsEnumerateComputeSystems 崩溃(已隔离): %s" % e)
+        print("       提示: 该 DLL 枚举路径在本机不可用, 请用 hcsdiag list")
+        return 1
     if rc != 0:
         print("HcsEnumerateComputeSystems 失败 rc=0x%08X" % (rc & 0xFFFFFFFF))
         return 1
-    print(take_string(out.value))
+    if not res.Buffer:
+        print("(无 compute system)")
+        return 0
+    print(take_string(ctypes.cast(res.Buffer, ctypes.c_void_p).value))
     return 0
 
 

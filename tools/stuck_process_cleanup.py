@@ -50,6 +50,11 @@ import subprocess
 import sys
 import time
 
+# 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 PS_EXE = os.path.join(
     os.environ.get("SystemRoot", r"C:\Windows"),
     "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
@@ -139,8 +144,16 @@ def process_basics(pid):
 
 
 def process_start(pid):
-    ps = ("(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CreationDate"
-          % pid)
+    """取进程创建时间。
+
+    🔴 坑: WMI 的 CreationDate 是 System.DateTime, PowerShell 默认把它格式化成
+       **美式** "10/21/2026 15:10:32" —— Python 的 fromisoformat 解析不了
+       (期望 ISO "2026-10-21T15:10:32"), 于是返回 None, 上游把存活时间算成 0,
+       导致所有「存活时长」守卫形同虚设(本轮实测踩到: Weixin 存活 187h 却报 0 分钟)。
+       => 必须显式指定 ISO 格式输出。
+    """
+    ps = ("$c=(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CreationDate; "
+          "if ($c) { $c.ToString('yyyy-MM-ddTHH:mm:ss') }" % pid)
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-Command", ps],
                            capture_output=True, timeout=30, **PS_ENC)
@@ -174,16 +187,31 @@ def list_procs(names):
     return out
 
 
-def cpu_delta(pid, seconds):
-    """取两次 CPU 累计时间的差, 判定"在干活"还是"挂死"。"""
+def cpu_delta(pid, seconds, windows=3):
+    """取多次 CPU 累计时间的差, 判定「在干活」还是「挂死」。
+
+    实测: Weixin 主进程连续 3 轮采样得到 0% / 1.56% / 4.95%
+    —— 偶发活动会让单窗结果在 0 和 5 之间跳, 判据就跟着抖。
+    => 多窗采样:
+       - 判「在干活」用**各窗最大增量**(宁可保守, 别误杀在干活的)
+       - 判「挂死」用**总增量**(偶发活动累加起来仍接近 0 才算挂死)
+    返回 (总增量, 末次快照, 各窗最大增量)
+    """
     a = process_basics(pid)
     if not a:
         return None
-    time.sleep(seconds)
-    b = process_basics(pid)
-    if not b:
-        return None
-    return b[2] - a[2], b
+    samples = []
+    prev = a[2]
+    b = a
+    for _ in range(max(1, windows)):
+        time.sleep(seconds)
+        b = process_basics(pid)
+        if not b:
+            return None
+        samples.append(b[2] - prev)
+        prev = b[2]
+    total = sum(samples)
+    return total, b, (max(samples) if samples else 0.0)
 
 
 # ---------------- 配方 A: explorer ----------------
@@ -237,19 +265,142 @@ def recipe_explorer(args):
     return 0
 
 
-# ---------------- 配方 B: git 挂死链 ----------------
-GIT_NAMES = {"git.exe", "git-remote-https.exe", "git-credential-manager.exe",
-              "sh.exe"}
+# ---------------- 配方 C: 句柄泄漏（累积未释放）----------------
+#  实测样本(2026-10-29): Weixin.exe 主进程(--scene=desktop) PID 28208
+#  持有 177790 个句柄, 而同 exe 的另外 5 个 Weixin 进程只有 207~516 个
+#  (中位数 243) —— 731.6 倍。进程从 10/21 起存活 187 小时。
+#  症状: 句柄吃的是**内核对象表**不是用户态内存, 所以 Private 只有 567MB,
+#  在任务管理器里看着完全正常; 但句柄表耗尽会导致后续 CreateProcess/CreateFile 全失败。
+#
+#  🔴 为什么这个配方默认【只报告不杀】, 与配方 A/B 不同:
+#     杀 explorer 只是关掉文件夹窗口(可恢复); 杀 Weixin 主进程会丢失
+#     登录态/未发送消息/小程序容器 —— 代价不可逆。所以默认只给建议命令。
+#     要真杀必须显式加 --kill-handle-leak, 且仍受全部守卫约束。
+#
+#  判据(三重,缺一不可):
+#     1. 句柄数 ≥ --min-handles(默认 50000)  —— 绝对量
+#     2. 相对同 exe 中位数 ≥ --burst-ratio(默认 20) 倍 —— 相对量, 消掉误报
+#     3. CPU 增量 < --max-cpu-pct(默认 1.0%) —— 不在干活
+#     4. 存活 ≥ --min-age-min(默认 60) 分钟
+#  为什么第 3 条不能省: 实测 WorkBuddy 宿主 51527 句柄(同 exe 中位数的 153 倍)
+#  但 CPU 3.1% —— 它在干活, 杀了会把用户正在跑的会话搞没。
+
+
+def recipe_handle_leak(args):
+    """句柄泄漏检测。默认只报告; --kill-handle-leak 才实际终止。"""
+    try:
+        import thread_handle_probe as thp
+    except ImportError:
+        log("配方C: 无法导入 thread_handle_probe（同目录）, 跳过")
+        return 0
+    probe = thp.probe_all()
+    if not probe:
+        log("配方C: 探测失败, 跳过")
+        return 0
+    findings = thp.analyze(probe, min_threads=10 ** 9,   # 只看句柄维度
+                           min_handles=args.min_handles,
+                           burst=args.burst_ratio)
+    if not findings:
+        log("配方C: 无句柄异常候选（阈值 ≥%d 句柄且 ≥%.0fx 同 exe 中位数）"
+            % (args.min_handles, args.burst_ratio))
+        return 0
+    now = datetime.datetime.now()
+    victims = []
+    for f in findings:
+        pid = f["pid"]
+        start = process_start(pid)
+        age_min = (now - start).total_seconds() / 60.0 if start else 0
+        if age_min < args.min_age_min:
+            log("配方C: %s PID=%d 存活仅 %.0f 分钟 < 阈值%d, 跳过"
+                % (f["name"], pid, age_min, args.min_age_min))
+            continue
+        d = cpu_delta(pid, args.sample_sec, args.cpu_windows)
+        if d is None:
+            continue
+        delta, _, peak = d
+        win = args.sample_sec * args.cpu_windows
+        pct = delta / win * 100.0
+        peak_pct = peak / args.sample_sec * 100.0
+        # 🔴 同配方B: 用总增量判「在干活」, 单窗峰值只做参考(理由见配方B注释)。
+        if pct >= args.max_cpu_pct:
+            log("配方C: %s PID=%d CPU总增量 %.1f%% >= 阈值%.1f%%, 在干活, 跳过"
+                % (f["name"], pid, pct, args.max_cpu_pct))
+            continue
+        log("配方C: %s PID=%d 句柄=%d (同exe中位数 %.0f, %.1fx) 存活=%.0f分钟 "
+            "CPU总增量=%.2f%%(峰值%.2f%%) -> %s"
+            % (f["name"], pid, f["handles"], f["peer_median_handles"],
+               f["burst_ratio"], age_min, pct, peak_pct,
+               "杀" if args.kill_handle_leak else "只报告(需 --kill-handle-leak 才动手)"))
+        if not args.kill_handle_leak:
+            log("       建议命令: taskkill /F /T /PID %d  "
+                "⚠️ 会丢失该应用的登录态与未完成会话" % pid)
+        victims.append(pid)
+    if args.kill_handle_leak and victims:
+        ok = 0
+        for pid in victims:
+            try:
+                r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                   capture_output=True, timeout=60, **PS_ENC)
+                if r.returncode == 0:
+                    ok += 1
+            except Exception as e:
+                log("配方C: 杀 PID=%d 失败: %s" % (pid, e))
+        log("配方C: 清理完成, 成功 %d / %d" % (ok, len(victims)))
+    return 0
+
+
+# ---------------- 配方 B: 挂死命令行链 ----------------
+#  实测样本 A (2026-10-29): 计划任务里的 git push 因凭据提示被吞而永久挂起,
+#    10/21~10/28 每天 17:45 一批, 共 56 进程 (32 git.exe + 8 git-remote-https +
+#    8 git-credential-manager + 8 sh.exe), 全部 CPU=0。
+#  实测样本 B (2026-10-29): `playwright-cli install-browser` 挂死 70 分钟,
+#    CPU=0、无网络连接、浏览器已下载完 3.1GB 但进程不退 —— 链是
+#    sh.exe -> node.exe(@playwright/cli) -> 子进程。
+#
+#  🔴 关键设计: 判据必须按**命令行模式**匹配, 不能只按进程名。
+#     原版只认 {git.exe, git-remote-https.exe, git-credential-manager.exe, sh.exe}
+#     —— "sh.exe" 太宽(任何 shell 都算 git 家族), 而 playwright 链的主体 node.exe
+#     又不在名单里, 于是漏网。改成按命令行里的工具标记匹配。
+#
+#  判据(三重):
+#     1. 命令行命中下方任一模式(工具标记)
+#     2. 存活 >= --min-age-min(默认 60) 分钟
+#     3. CPU 增量 < --max-cpu-pct(默认 1.0%)  —— 在干活的不杀
+#  ⚠️ 必须验 CPU 增量而不是只看启动时间: 否则会杀掉正在 push 的真实任务。
+
+# 命令行匹配模式(小写子串匹配)
+CMD_PATTERNS = (
+    ("git", ("git.exe", "git-remote-https", "git-credential-manager",
+             "git push", "git pull", "git fetch", "git clone")),
+    ("playwright-cli", ("playwright-cli", "install-browser", "@playwright/cli")),
+)
+
+
+def _match_cmd(cmd):
+    """返回命中的模式名, 没命中返回 None。"""
+    low = (cmd or "").lower()
+    for label, pats in CMD_PATTERNS:
+        for p in pats:
+            if p in low:
+                return label
+    return None
 
 
 def recipe_git(args):
-    procs = list_procs(GIT_NAMES)
+    """挂死命令行链回收(原名 recipe_git, 现覆盖 git + playwright-cli 两类)。"""
+    # 收集候选进程名: git 家族 + node + sh + pwsh/powershell(playwright 链可能是 node)
+    names = {"git.exe", "git-remote-https.exe", "git-credential-manager.exe",
+             "sh.exe", "node.exe"}
+    procs = list_procs(names)
     if not procs:
-        log("配方B: 未发现 git 家族进程")
+        log("配方B: 未发现候选进程")
         return 0
     now = datetime.datetime.now()
     victims = []
     for pid, (name, ppid, cmd) in procs.items():
+        label = _match_cmd(cmd)
+        if not label:
+            continue
         basics = process_basics(pid)
         if not basics:
             continue
@@ -257,20 +408,27 @@ def recipe_git(args):
         start = process_start(pid)
         age_min = (now - start).total_seconds() / 60.0 if start else 0
         if age_min < args.min_age_min:
-            log("配方B: %s PID=%d 存活仅 %.0f 分钟 < 阈值%d, 跳过" %
-                (name, pid, age_min, args.min_age_min))
+            log("配方B: [%s] %s PID=%d 存活仅 %.0f 分钟 < 阈值%d, 跳过"
+                % (label, name, pid, age_min, args.min_age_min))
             continue
-        d = cpu_delta(pid, args.sample_sec)
+        d = cpu_delta(pid, args.sample_sec, args.cpu_windows)
         if d is None:
             continue
-        delta, b = d
-        pct = delta / args.sample_sec * 100.0
+        delta, b, peak = d
+        win = args.sample_sec * args.cpu_windows
+        pct = delta / win * 100.0
+        peak_pct = peak / args.sample_sec * 100.0
+        # 🔴 用**总增量**判「在干活」, 不用单窗峰值:
+        #    实测 Weixin 3 秒窗内偶发突发(峰值 38%), 但 9 秒总增量只有几个百分点。
+        #    单窗峰值会把「偶发活动」误判成「一直在干活」=> 漏掉真挂死。
         if pct >= args.max_cpu_pct:
-            log("配方B: %s PID=%d CPU增量 %.1f%% >= 阈值%.1f%%, 在干活, 跳过" %
-                (name, pid, pct, args.max_cpu_pct))
+            log("配方B: [%s] %s PID=%d CPU总增量 %.1f%% >= 阈值%.1f%%, 在干活, 跳过"
+                % (label, name, pid, pct, args.max_cpu_pct))
             continue
-        log("配方B: %s PID=%d 存活=%.0f分钟 CPU增量=%.2f%% -> %s" %
-            (name, pid, age_min, pct, "杀" if args.apply else "演练:将杀"))
+        log("配方B: [%s] %s PID=%d 存活=%.0f分钟 CPU总增量=%.2f%%(峰值%.2f%%) -> %s"
+            % (label, name, pid, age_min, pct, peak_pct,
+               "杀" if args.apply else "演练:将杀"))
+        log("       cmd: %s" % (cmd or "")[:160])
         victims.append(pid)
     if args.apply and victims:
         ok = 0
@@ -298,7 +456,15 @@ def main():
     ap.add_argument("--max-cpu-pct", type=float, default=1.0,
                     help="CPU增量%%超过此值视为在干活, 不杀(默认1.0)")
     ap.add_argument("--sample-sec", type=int, default=3,
-                    help="CPU 采样秒数(默认3)")
+                    help="单个 CPU 采样窗秒数(默认3)")
+    ap.add_argument("--cpu-windows", type=int, default=3,
+                    help="CPU 采样窗个数(默认3; 峰值判在干活, 总和判挂死)")
+    ap.add_argument("--min-handles", type=int, default=50000,
+                    help="句柄数阈值(默认50000)")
+    ap.add_argument("--burst-ratio", type=float, default=20.0,
+                    help="相对同 exe 中位数的倍数阈值(默认20)")
+    ap.add_argument("--kill-handle-leak", action="store_true",
+                    help="允许真的终止句柄泄漏进程(默认只报告!)")
     ap.add_argument("--no-log", action="store_true", help="不写日志文件")
     args = ap.parse_args()
 
@@ -310,6 +476,7 @@ def main():
     try:
         recipe_explorer(args)
         recipe_git(args)
+        recipe_handle_leak(args)
     except Exception as e:
         log("执行异常: %s" % e)
         return 1

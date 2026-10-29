@@ -12,6 +12,32 @@ import time
 PSAPI = ctypes.WinDLL("psapi.dll")
 KERNEL32 = ctypes.WinDLL("kernel32.dll")
 
+# 🔴 绝对路径: 某些受控环境(IDE 托管的 bash / 计划任务上下文)PATH 里
+#    没有 System32\WindowsPowerShell, 裸 "powershell" 会 WinError 2。
+#    这是本项目踩过两次的同一类兼容性 bug。
+PS_EXE = os.path.join(
+    os.environ.get("SystemRoot", r"C:\Windows"),
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+
+# 🔴 PowerShell 输出在本机默认是 GBK(936): 用 text=True(默认 utf-8) 解码会抛
+#    UnicodeDecodeError, 而且是在 subprocess 的 reader 线程里抛 -> 静默丢输出。
+#    encoding= 与 text=True 互斥, 不能同时传。
+PS_ENC = {"encoding": "utf-8", "errors": "replace"}
+
+
+def _decode(raw):
+    """自适应解码 PowerShell stdout 字节(utf-8 -> gbk -> 兜底)。"""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    for enc in ("utf-8", "gbk", "cp936", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
 
 class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
     _fields_ = [
@@ -64,13 +90,14 @@ def main():
     # 必须挑「子树里 Private 最大的那个」来测，否则测到的是 1MB 的壳。
     def pick_heavy(pid):
         ps = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            [PS_EXE, "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process | "
              "Select-Object ProcessId,ParentProcessId,WorkingSetSize | ConvertTo-Json -Compress"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, timeout=30, **PS_ENC,
         )
         import json
-        rows = json.loads(ps.stdout or "[]")
+        raw = _decode(ps.stdout)
+        rows = json.loads(raw or "[]")
         if isinstance(rows, dict):
             rows = [rows]
         kids = [r for r in rows if r.get("ParentProcessId") == pid]

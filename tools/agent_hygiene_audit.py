@@ -35,6 +35,12 @@ import subprocess
 import sys
 import time
 
+# 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
+#    sys.path[0] 只在「以脚本路径直接运行」时才是脚本目录，从别处 import 就找不到了。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 def _local_appdata():
     """定位 %LOCALAPPDATA%。
 
@@ -432,6 +438,82 @@ def main():
     out()
     out("> 判读纪律: CPU 持续 >1% = 在干活, 别杀; CPU≈0 且内存大 = 等待/缓存, 回收收益看 Private;")
     out("> 上一轮实测: opencode 954MB/CPU530s 是在跑任务, 不是泄漏 —— 这就是为什么本工具只读不杀。")
+
+    # ---- 4b 线程 / 句柄维度（独立于 Private 排序）----
+    # 🔴 为什么必须单列一维: 上一版只按 Private 排序, 结果漏掉了 Weixin 主进程
+    #    的句柄泄漏(Private 仅 567MB 排不进 Top15, 句柄却 177790)。
+    #    句柄吃的是内核对象表, 不是用户态内存 —— **只看 Private 的工具永远看不见它**。
+    out()
+    out("## 4b 线程 / 句柄维度（与 Private 并列的独立维度）")
+    try:
+        import thread_handle_probe as thp
+        probe = thp.probe_all()
+        if not probe:
+            out("- [warn] 线程/句柄探测失败（不影响本次其余结论）")
+        else:
+            tt, th = thp.top_tables(probe, 8)
+            out("- 采样进程数: %d（一次 Get-Process 调用取全表, 实测 ~360ms）" % len(probe))
+            out()
+            out("| 排名 | 线程数 Top | 进程 | 句柄数 | Suspended | PrivMB |")
+            out("|---|---|---|---|---|---|")
+            for i, (pid, d) in enumerate(tt, 1):
+                out("| T%d | %d | %s | %d | %d | %.1f |"
+                    % (i, d["threads"], d["name"], d["handles"], d["suspended"], d["priv_mb"]))
+            out()
+            out("| 排名 | 句柄数 Top | 进程 | 线程数 | Suspended | PrivMB |")
+            out("|---|---|---|---|---|---|")
+            for i, (pid, d) in enumerate(th, 1):
+                out("| H%d | %d | %s | %d | %d | %.1f |"
+                    % (i, d["handles"], d["name"], d["threads"], d["suspended"], d["priv_mb"]))
+            findings = thp.analyze(probe)
+            out()
+            if findings:
+                out("**判定: %d 个异常候选（判据 = 绝对阈值 + 相对同 exe 中位数的倍数）**" % len(findings))
+                out()
+                out("| 类型 | pid | 进程 | 线程 | 句柄 | Suspended占比 | 同exe中位数 | 倍数 | CPU增量 | 存活h | 结论 |")
+                out("|---|---|---|---|---|---|---|---|---|---|---|")
+                for f in findings:
+                    base_v = (f["peer_median_threads"] if f["kind"] == "thread"
+                              else f["peer_median_handles"])
+                    # 🔴 必须交叉验证 CPU: 句柄/线程高 ≠ 该杀。
+                    #    实测 Weixin 主进程 177790 句柄 CPU 3.7%(在干活), WorkBuddy 宿主
+                    #    51500 句柄 CPU 2.7%(在干活) —— 两个都不能杀。
+                    pid = int(f["pid"])
+                    # 🔴 CPU 采样窗必须够长: 3 秒窗口实测不稳（同一进程两次测出
+                    #    3.7% 和 0.0%）, 因为 TotalProcessorTime 增量在低负载下
+                    #    落在计时器分辨率边缘。统一用 a.sample_sec（默认 5s）取两次。
+                    cpu_win = max(2, a.sample_sec)
+                    _, c0 = proc_times(pid)
+                    time.sleep(cpu_win)
+                    _, c1 = proc_times(pid)
+                    cpu_pct = 0.0
+                    if c0 is not None and c1 is not None:
+                        cpu_pct = (c1 - c0) / float(cpu_win) * 100.0
+                    created = proc_times(pid)[0]
+                    age_h = (time.time() - created) / 3600.0 if created else None
+                    if cpu_pct >= 1.0:
+                        verdict = "在干活 → **不要杀**"
+                    elif age_h is not None and age_h >= 24:
+                        verdict = "空闲且长期累积 → 疑似泄漏, 需人工确认"
+                    else:
+                        verdict = "空闲但刚启动 → 观察"
+                    out("| %s | %s | %s | %d | %d | %.1f%% | %.0f | %.1fx | %.1f%% | %s | %s |"
+                        % (f["kind"], f["pid"], f["name"], f["threads"], f["handles"],
+                           f["suspended_ratio"] * 100, base_v, f["burst_ratio"],
+                           cpu_pct, ("%.1f" % age_h) if age_h is not None else "?",
+                           verdict))
+                out()
+                out("> 判读: **句柄/线程高 ≠ 该杀**。必须同时看 CPU 增量与存活时长——")
+                out("> 实测 WorkBuddy 宿主 51500 句柄但 CPU 3.1%（在干活）→ **不能杀**；")
+                out("> Weixin 主进程 177790 句柄、CPU≈0%、存活 187 小时 → 才是「累积未释放」的真泄漏信号。")
+                out("> 判据必须三合一：**句柄/线程异常 + CPU≈0 + 存活时间长** → 才值得动。")
+                out("> （SysWatch 这类工具只按固定阈值报「句柄泄漏」，会连 System(9142)/msedge(8777) 一起误报——")
+                out(">  本工具用「相对同 exe 中位数倍数」就是为了消掉这类误报。）")
+            else:
+                out("- 无异常候选（线程 ≥%d 或 句柄 ≥%d，且相对同 exe 中位数 ≥%.0fx）"
+                    % (thp.MIN_THREADS_ABS, thp.MIN_HANDLES_ABS, thp.BURST_RATIO))
+    except Exception as e:
+        out("- [warn] 线程/句柄维度异常: %s" % e)
 
     # ---- 5 与上次对比 ----
     out()
