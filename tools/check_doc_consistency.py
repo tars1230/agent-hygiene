@@ -10,10 +10,17 @@ check_doc_consistency.py —— 文档一致性核验（只读）
   「80849+61193+30632+3752+601 = 177027」与它自己声明的 178033 对不上——
   纯靠人眼发现不了。
 
+  还有一个更隐蔽的副本问题：skill 装在 `~/.workbuddy/skills/agent-hygiene/SKILL.md`，
+  是仓库版的**手工拷贝**。仓库里改了 skill，装的那份不会自动跟着变——
+  2026-10-29 实测：仓库版已修正 7 个判据，用户级装的还是旧版（13 条铁律 vs 17 条），
+  新增的 leave-one-out / SOLO_HANDLES_ABS / 489 行 / Nonexistent 判据**一条都没有**。
+  下次 agent 加载 skill 会用错判据 → 这类「三处副本」必须机器校验。
+
 判据
   1) 构成表各行必须加总等于声明的总数（不等的 = FAIL）
   2) 同一个指标在 README 与 SKILL 里必须出现同一个值（不一致 = FAIL）
   3) 已废弃的旧数字不得再出现（例如已作废的「+675/分钟」「487 行」）
+  4) 已安装的 skill 副本必须与仓库版一致（不一致 = FAIL，提示重新同步）
 
 退出码 0 = 全一致；非 0 = 有 FAIL。
 """
@@ -25,6 +32,12 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 README = os.path.join(ROOT, "README.md")
 SKILL = os.path.join(ROOT, "skill", "agent-hygiene", "SKILL.md")
+
+# 已安装 skill 的可能位置（Windows / macOS / Linux）
+INSTALLED_CANDIDATES = [
+    os.path.join(os.path.expanduser("~"), ".workbuddy", "skills", "agent-hygiene", "SKILL.md"),
+    os.path.join(os.path.expanduser("~"), ".claude", "skills", "agent-hygiene", "SKILL.md"),
+]
 
 # (指标名, 必须同时出现的两个文档里的正则, 说明)
 PAIR_CHECKS = [
@@ -117,6 +130,37 @@ def main():
                     print("  [FAIL] %-14s %s <- %s"
                           % (name, desc, text[max(0, m.start() - 60):m.end() + 20]
                              .replace("\n", " ")))
+
+    print()
+    print("=== 4) 已安装 skill 副本 vs 仓库版 ===")
+    skill_repo = files[SKILL]
+    found_any = False
+    for cand in INSTALLED_CANDIDATES:
+        if not os.path.exists(cand):
+            print("  [skip] %s 不存在" % cand)
+            continue
+        found_any = True
+        inst = read(cand)
+        if inst == skill_repo:
+            print("  [ok]   %s 内容一致" % cand)
+        else:
+            # 找出「仓库版有、装的那份没有」的判据关键词，说明差在哪
+            probes = ["leave-one-out", "SOLO_HANDLES_ABS", "489", "0xBBBF0",
+                      "Nonexistent", "check_doc_consistency"]
+            missing = [p for p in probes if p in skill_repo and p not in inst]
+            # 单位统一用「字符数」（不是字节数）—— 中文 UTF-8 一个字 3 字节，混用会看错量级
+            delta_chars = len(inst) - len(skill_repo)
+            fails.append("已安装 skill 与仓库版不一致：%s（相差 %+d 字符%s）"
+                         % (cand, delta_chars,
+                            "；仓库版有而装版缺：" + "、".join(missing) if missing else ""))
+            print("  [FAIL] %s" % cand)
+            print("         仓库版 %d 字符 / 装的那份 %d 字符（%+d）"
+                  % (len(skill_repo), len(inst), delta_chars))
+            if missing:
+                print("         仓库版有而装版缺：%s" % "、".join(missing))
+            print("         → 修复：cp \"%s\" \"%s\"" % (SKILL, cand))
+    if not found_any:
+        print("  [skip] 没有找到已安装的 skill 副本（本机可能未安装）")
 
     print()
     print("=" * 60)

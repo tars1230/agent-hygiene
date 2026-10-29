@@ -110,6 +110,21 @@ Windows 工作站做定期体检。
     工具已内置：`python tools/handle_type_breakdown.py <pid> --diff --interval 60 --rounds 10`
     → 输出逐段增量 + 每段速率 + 逐目标 pid Δ + 首尾对比 + 自动判读。
 
+18. 🔴 **skill 有三份副本，改一份不会同步另外两份**。
+    2026-10-29 实测踩坑：仓库里 `skill/agent-hygiene/SKILL.md` 已修正 7 个判据，
+    但用户级安装的 `~/.workbuddy/skills/agent-hygiene/SKILL.md` **还是旧版**
+    （13 条铁律 vs 17 条），新增的 `leave-one-out` / `SOLO_HANDLES_ABS` /
+    「489 行」/「Nonexistent」判据**一条都没有**——下次 agent 加载 skill 会用错判据，
+    而且**没有任何东西会报错**。
+    🔴 **凡是「同一份内容在多处存在」的地方，都必须有机器校验**：
+    本项目已有 `check_doc_consistency.py`，第 4 类检查专门比对「已安装 skill 副本 vs 仓库版」，
+    不一致直接 FAIL 并打印修复用的 `cp` 命令。
+    → **改仓库里的 SKILL.md 后必须立刻同步安装副本**：
+    ```
+    cp skill/agent-hygiene/SKILL.md ~/.workbuddy/skills/agent-hygiene/SKILL.md
+    python tools/check_doc_consistency.py   # 必须退出码 0
+    ```
+
 ## 工具（本仓库 `tools/` 目录）
 
 | 工具 | 用途 | 性质 |
@@ -117,7 +132,7 @@ Windows 工作站做定期体检。
 | `agent_hygiene_audit.py` | 体检：内存压力 + 家族 Top + **线程/句柄维度** + 孤儿/HCS/shim + 空转 vs 干活 + 对比 | **只读** |
 | `thread_handle_probe.py` | 线程/句柄探测（一次 PS 调用取全表，~360ms）+ 中位数倍数判据 | **只读** |
 | `handle_type_breakdown.py` | 句柄**类型分解**（Event/Token/Process… + 已退出目标与存活目标分列），把「句柄多」变成根因 | **只读**，需 Sysinternals Handle |
-| `check_doc_consistency.py` | 文档一致性核验：构成表加总、两份文档同指标、已作废说法残留 | **只读**，退出码 0 = 全一致 |
+| `check_doc_consistency.py` | 文档一致性核验：构成表加总、两份文档同指标、已作废说法残留、**已安装 skill 副本 vs 仓库版** | **只读**，退出码 0 = 全一致 |
 | `codex_sandbox_cleanup.py` | Codex 沙箱 VM 泄漏回收（两档 + 四守卫 + 年龄门槛） | 会动服务，需 `--apply` |
 | `stuck_process_cleanup.py` | 挂死进程回收（explorer 线程泄漏 / 挂死命令行链 / 句柄泄漏） | 会杀进程，需 `--apply` |
 | `hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | list/props 只读 |
