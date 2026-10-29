@@ -8,3 +8,8 @@ _vendor/
 
 # 临时提交信息文件
 COMMIT_MSG.txt
+
+# 本地临时文件（复核任务书、边界测试脚本）
+_scratch/
+_edge_case_test*.py
+_review_prompt.txt

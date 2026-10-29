@@ -468,13 +468,14 @@ def main():
             findings = thp.analyze(probe)
             out()
             if findings:
-                out("**判定: %d 个异常候选（判据 = 绝对阈值 + 相对同 exe 中位数的倍数）**" % len(findings))
+                out("**判定: %d 个异常候选（判据 = 绝对阈值 + 相对参照系的倍数）**" % len(findings))
                 out()
-                out("| 类型 | pid | 进程 | 线程 | 句柄 | Suspended占比 | 同exe中位数 | 倍数 | CPU增量 | 存活h | 结论 |")
-                out("|---|---|---|---|---|---|---|---|---|---|---|")
+                out("| 类型 | pid | 进程 | 线程 | 句柄 | Suspended占比 | 参照值 | 参照系 | 倍数 | CPU增量 | 存活h | 结论 |")
+                out("|---|---|---|---|---|---|---|---|---|---|---|---|")
                 for f in findings:
                     base_v = (f["peer_median_threads"] if f["kind"] == "thread"
                               else f["peer_median_handles"])
+                    basis = f.get("basis", "同exe中位数")
                     # 🔴 必须交叉验证 CPU: 句柄/线程高 ≠ 该杀。
                     #    实测 Weixin 主进程 177790 句柄 CPU 3.7%(在干活), WorkBuddy 宿主
                     #    51500 句柄 CPU 2.7%(在干活) —— 两个都不能杀。
@@ -497,9 +498,9 @@ def main():
                         verdict = "空闲且长期累积 → 疑似泄漏, 需人工确认"
                     else:
                         verdict = "空闲但刚启动 → 观察"
-                    out("| %s | %s | %s | %d | %d | %.1f%% | %.0f | %.1fx | %.1f%% | %s | %s |"
+                    out("| %s | %s | %s | %d | %d | %.1f%% | %.0f | %s | %.1fx | %.1f%% | %s | %s |"
                         % (f["kind"], f["pid"], f["name"], f["threads"], f["handles"],
-                           f["suspended_ratio"] * 100, base_v, f["burst_ratio"],
+                           f["suspended_ratio"] * 100, base_v, basis, f["burst_ratio"],
                            cpu_pct, ("%.1f" % age_h) if age_h is not None else "?",
                            verdict))
                 out()

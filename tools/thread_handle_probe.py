@@ -32,6 +32,12 @@ thread_handle_probe.py —— 进程「线程数 / 句柄数」维度探测（�
   异常候选 = threads >= MIN_THREADS_ABS
              且 (thread_burst_score >= BURST_RATIO 或 suspended_ratio >= SUSPENDED_RATIO)
   句柄异常 = handles >= MIN_HANDLES_ABS 且 handle_burst_score >= BURST_RATIO
+
+🔴 单实例 exe 组的例外（实测踩到，必须保留）
+  同 exe 只有 1 个实例时，中位数 == 它自己 => 倍数恒为 1.0 => **相对倍数这道防线失效**。
+  实测本机 80 个 exe 是单实例，其中 wetype_renderer 持有 21724 个句柄 ——
+  按「倍数 ≥20x」永远查不出来，只能靠绝对阈值兜底。
+  所以单实例组(n==1) **不适用倍数判据**，改用「绝对阈值 + 全局分位数」双条件。
 """
 import argparse
 import ctypes
@@ -185,10 +191,32 @@ def _ratio(val, base):
     return val / base
 
 
+def _global_percentile(probe, field, pct=0.5):
+    """全表分位数（去掉内核进程）。用于「同 exe 只有一个实例」时的兜底参照系。
+
+    🔴 为什么要这个：同 exe 只有 1 个实例时中位数==自己，倍数恒为 1.0，
+       相对判据完全失效。此时退回到「这台机器上它比典型进程高多少倍」。
+
+    🔴 为什么用中位数(P50) 而不是高分位: 实测 P99.9 在 539 个进程上等于**最大值本身**
+       （被离群进程如 Weixin 污染），拿它当参照系等于「和最大值比」= 恒为 1.0，没有意义。
+       中位数不受离群值影响，代表「这台机器上一个典型进程」。
+    """
+    vals = sorted(d.get(field, 0) for d in probe.values()
+                  if (d.get("name") or "").lower() not in KERNEL_NAMES)
+    if not vals:
+        return 0.0
+    idx = min(len(vals) - 1, int(len(vals) * pct))
+    return float(vals[idx])
+
+
 def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
             burst=BURST_RATIO, susp_ratio=SUSPENDED_RATIO):
     """返回异常候选列表。每项含判据与原始数字，供报告直接引用。"""
     med = _median_by_exe(probe)
+    # 🔴 单实例 exe 组没有「同类参照」，倍数恒为 1.0 -> 倍数判据失效。
+    #    改用全局分位数兜底（这台机器上它排多高）。
+    g_handles_p999 = _global_percentile(probe, "handles", 0.5)
+    g_threads_p999 = _global_percentile(probe, "threads", 0.5)
     findings = []
     for pid, d in probe.items():
         nm = (d.get("name") or "").lower()
@@ -201,12 +229,24 @@ def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
         hdl_ratio = _ratio(d["handles"], m["handles"])
         s_ratio = (d["suspended"] / d["threads"]) if d["threads"] else 0.0
 
+        # 同 exe 只有 1 个实例 -> 倍数无意义, 用全局分位数代替
+        solo = (m["n"] <= 1)
+        if solo:
+            thr_ratio = _ratio(d["threads"], g_threads_p999)
+            hdl_ratio = _ratio(d["handles"], g_handles_p999)
+            base_threads = g_threads_p999
+            base_handles = g_handles_p999
+        else:
+            base_threads = m["threads"]
+            base_handles = m["handles"]
+        basis = ("全局中位数" if solo else "同exe中位数")
+
         # 线程维度
         if d["threads"] >= min_threads and (
                 thr_ratio >= burst or s_ratio >= susp_ratio):
             reasons = []
             if thr_ratio >= burst:
-                reasons.append("线程数是同 exe 中位数的 %.1f 倍" % thr_ratio)
+                reasons.append("线程数是%s的 %.1f 倍" % (basis, thr_ratio))
             if s_ratio >= susp_ratio:
                 reasons.append("%.1f%% 线程处于 Suspended" % (s_ratio * 100))
             findings.append({
@@ -214,10 +254,11 @@ def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
                 "threads": d["threads"], "handles": d["handles"],
                 "suspended": d["suspended"], "suspended_ratio": round(s_ratio, 4),
                 "priv_mb": d["priv_mb"],
-                "peer_median_threads": m["threads"],
-                "peer_median_handles": m["handles"],
+                "peer_median_threads": base_threads,
+                "peer_median_handles": base_handles,
                 "peer_count": m["n"],
                 "burst_ratio": round(thr_ratio, 1),
+                "basis": basis,
                 "reasons": reasons,
             })
         # 句柄维度（独立于线程维度：Weixin 样本句柄爆炸但线程数正常）
@@ -227,11 +268,12 @@ def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
                 "threads": d["threads"], "handles": d["handles"],
                 "suspended": d["suspended"], "suspended_ratio": round(s_ratio, 4),
                 "priv_mb": d["priv_mb"],
-                "peer_median_threads": m["threads"],
-                "peer_median_handles": m["handles"],
+                "peer_median_threads": base_threads,
+                "peer_median_handles": base_handles,
                 "peer_count": m["n"],
                 "burst_ratio": round(hdl_ratio, 1),
-                "reasons": ["句柄数是同 exe 中位数的 %.1f 倍" % hdl_ratio],
+                "basis": basis,
+                "reasons": ["句柄数是%s的 %.1f 倍" % (basis, hdl_ratio)],
             })
     findings.sort(key=lambda f: -(f["handles"] if f["kind"] == "handle" else f["threads"]))
     return findings
