@@ -59,9 +59,24 @@ PS_EXE = os.path.join(
 #    统一用 errors="replace" 兜底, 不让编码问题吃掉整个结果。
 PS_ENC = {"encoding": "gbk", "errors": "replace"}
 
-LOG_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-    "agent-hygiene", "logs")
+def _local_appdata():
+    """定位 %LOCALAPPDATA%。
+
+    🔴 不能只靠环境变量: IDE 托管的 bash / 计划任务上下文里 LOCALAPPDATA 可能缺失,
+       回退到 expanduser("~") 会把日志写到 C:\\Users\\<name>\\agent-hygiene, 与 README 承诺不一致。
+    """
+    v = os.environ.get("LOCALAPPDATA")
+    if v and os.path.isdir(v):
+        return v
+    for base in (os.environ.get("SystemDrive", "C:"), "C:"):
+        p = os.path.join(base + "\\", "Users", os.environ.get("USERNAME", ""),
+                         "AppData", "Local")
+        if os.path.isdir(p):
+            return p
+    return os.path.expanduser("~")
+
+
+LOG_DIR = os.path.join(_local_appdata(), "agent-hygiene", "logs")
 LOG_FILE = os.path.join(LOG_DIR, "stuck_cleanup.log")
 
 

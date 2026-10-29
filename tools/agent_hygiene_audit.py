@@ -35,9 +35,26 @@ import subprocess
 import sys
 import time
 
-DEFAULT_REPORT_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-    "agent-hygiene", "reports")
+def _local_appdata():
+    """定位 %LOCALAPPDATA%。
+
+    🔴 不能只靠 os.environ.get("LOCALAPPDATA"): IDE 托管的 bash / 某些计划任务上下文里
+       这个变量可能缺失 -> 回退到 expanduser("~") 会把报告写到 C:\\Users\\<name>\\agent-hygiene,
+       与 README 承诺的 %LOCALAPPDATA%\\agent-hygiene 不一致(实测踩过: 报告落在家目录)。
+       Windows 上直接按已知路径推导, 不依赖环境变量。
+    """
+    v = os.environ.get("LOCALAPPDATA")
+    if v and os.path.isdir(v):
+        return v
+    for base in (os.environ.get("SystemDrive", "C:"), "C:"):
+        p = os.path.join(base + "\\", "Users", os.environ.get("USERNAME", ""),
+                         "AppData", "Local")
+        if os.path.isdir(p):
+            return p
+    return os.path.expanduser("~")
+
+
+DEFAULT_REPORT_DIR = os.path.join(_local_appdata(), "agent-hygiene", "reports")
 MIN_ORPHAN_AGE_H = 1.0
 ORPHAN_MIN_PRIV_MB = 50.0
 RENDERER_BIG_MB = 500.0
