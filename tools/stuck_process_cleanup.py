@@ -282,7 +282,7 @@ def recipe_explorer(args):
 #     2. 相对同 exe 中位数 ≥ --burst-ratio(默认 20) 倍 —— 相对量, 消掉误报
 #     3. CPU 增量 < --max-cpu-pct(默认 1.0%) —— 不在干活
 #     4. 存活 ≥ --min-age-min(默认 60) 分钟
-#  为什么第 3 条不能省: 实测 WorkBuddy 宿主 51527 句柄(同 exe 中位数的 153 倍)
+#  为什么第 3 条不能省: 实测 WorkBuddy 宿主 5.6 万句柄(同 exe 同伴中位数的 168 倍)
 #  但 CPU 3.1% —— 它在干活, 杀了会把用户正在跑的会话搞没。
 
 

@@ -35,9 +35,15 @@ thread_handle_probe.py —— 进程「线程数 / 句柄数」维度探测（�
 
 🔴 单实例 exe 组的例外（实测踩到，必须保留）
   同 exe 只有 1 个实例时，中位数 == 它自己 => 倍数恒为 1.0 => **相对倍数这道防线失效**。
-  实测本机 80 个 exe 是单实例，其中 wetype_renderer 持有 21724 个句柄 ——
-  按「倍数 ≥20x」永远查不出来，只能靠绝对阈值兜底。
-  所以单实例组(n==1) **不适用倍数判据**，改用「绝对阈值 + 全局分位数」双条件。
+  实测本机 85 个 exe 是单实例，其中 wetype_renderer 持有 21889 个句柄 ——
+  按「倍数 ≥20x」永远查不出来。所以单实例组(n==1) 改用
+  「绝对下限 SOLO_HANDLES_ABS=20000 + 全局中位数倍数 ≥20x」双条件。
+
+🔴 n>=2 的「组内中位数」陷阱（2026-10-29 独立复核 grok 4.7 时实测踩到）
+  组内中位数会被离群实例**自己**抬高：组内 2 个实例、其中一个泄漏到 190000 句柄、
+  另一个正常 243 时，中位数 = 95121.5 => 倍数只有 2.0 => **异常被藏住**。
+  所以 n>=2 时改用 **leave-one-out**：算某个进程的倍数时，参照值取
+  「同 exe 其余实例」的中位数，把自己排除在外（见 _peer_median）。
 """
 import argparse
 import ctypes
@@ -78,7 +84,12 @@ def _decode(raw):
 # 判定阈值（全部来自本机实测，见 README「线程/句柄维度」一节）
 MIN_THREADS_ABS = 2000        # 线程绝对下限。实测正常进程最高 312(System)/134(Weixin)
 MIN_HANDLES_ABS = 50000       # 句柄绝对下限。实测正常进程最高 8961(System)/8781(msedge)
-BURST_RATIO = 20.0            # 相对同 exe 中位数的倍数阈值
+# 🔴 单实例 exe 组的句柄绝对下限（2026-10-29 复核后新增）。
+#    单实例没有同伴可对照，只有「全局中位数倍数」一道防线，倍数高但绝对值中等时
+#    会被 50000 挡掉。实测 wetype_renderer 21889 个句柄 = 全局中位数的 100 倍，
+#    按原阈值永远查不出来。单实例组改用 20000 下限。
+SOLO_HANDLES_ABS = 20000
+BURST_RATIO = 20.0            # 相对同 exe 同伴中位数的倍数阈值
 SUSPENDED_RATIO = 0.30        # Suspended 线程占比阈值（泄漏样本 99.85% vs 正常 0%）
 
 # 内核进程：句柄/线程天然高，且泄漏形态不同，不参与「相对同 exe」比较
@@ -168,12 +179,20 @@ def _median_by_exe(probe, exclude_kernel=True):
 
     🔴 这是避免误报的核心：同 exe 的多个进程天然同构（中位数代表「正常水位」），
        某个进程是中位数的 N 倍才是异常。绝对阈值做不到这一点。
+
+    🔴 但「组内中位数」会被离群实例自己抬高（2026-10-29 独立复核 grok 4.7 时实测）：
+       组内只有 2 个实例、其中一个泄漏到 190000 句柄、另一个正常 243 时，
+       中位数 = (190000+243)/2 = 95121.5 -> 倍数只有 2.0 -> **异常被藏住**。
+       所以 analyze() 里改用 **leave-one-out**：算某个进程的倍数时，
+       参照值取「同 exe 其余实例」的中位数，把自己排除在外。
+       这里同时把原始值列表存下来供 leave-one-out 使用。
     """
     buckets = {}
     for pid, d in probe.items():
         nm = (d.get("name") or "").lower()
         if exclude_kernel and nm in KERNEL_NAMES:
             continue
+        d.setdefault("pid", int(pid) if str(pid).isdigit() else pid)
         buckets.setdefault(nm, []).append(d)
     med = {}
     for nm, lst in buckets.items():
@@ -181,8 +200,25 @@ def _median_by_exe(probe, exclude_kernel=True):
             "threads": statistics.median([x["threads"] for x in lst]) or 0.0,
             "handles": statistics.median([x["handles"] for x in lst]) or 0.0,
             "n": len(lst),
+            # leave-one-out 需要**按 pid**索引，不能只存值列表：
+            # 同 exe 的两个实例句柄可能相等，按值剔除会误删同伴。
+            "threads_by_pid": {str(x["pid"]): x["threads"] for x in lst},
+            "handles_by_pid": {str(x["pid"]): x["handles"] for x in lst},
         }
     return med
+
+
+def _peer_median(by_pid, self_pid):
+    """leave-one-out 中位数：把「自己」从样本里剔除后再求中位数。
+
+    🔴 n>=2 时必须用它，否则离群实例会把自己的参照值抬高，把异常藏住。
+       n==1 时无同伴可比，返回 None（调用方退回全局中位数）。
+    """
+    self_pid = str(self_pid)
+    peers = [v for p, v in by_pid.items() if p != self_pid]
+    if not peers:
+        return None
+    return float(statistics.median(peers))
 
 
 def _ratio(val, base):
@@ -225,21 +261,26 @@ def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
         m = med.get(nm)
         if not m:
             continue
-        thr_ratio = _ratio(d["threads"], m["threads"])
-        hdl_ratio = _ratio(d["handles"], m["handles"])
         s_ratio = (d["suspended"] / d["threads"]) if d["threads"] else 0.0
 
-        # 同 exe 只有 1 个实例 -> 倍数无意义, 用全局分位数代替
+        # 🔴 参照系选择（2026-10-29 独立复核 grok 4.7 后修正）：
+        #    n>=2 : leave-one-out 中位数（剔除自己），否则离群实例会把自己藏住
+        #    n==1 : 无同伴可比 -> 全局中位数兜底
         solo = (m["n"] <= 1)
         if solo:
             thr_ratio = _ratio(d["threads"], g_threads_p999)
             hdl_ratio = _ratio(d["handles"], g_handles_p999)
             base_threads = g_threads_p999
             base_handles = g_handles_p999
+            basis = "全局中位数"
         else:
-            base_threads = m["threads"]
-            base_handles = m["handles"]
-        basis = ("全局中位数" if solo else "同exe中位数")
+            pt = _peer_median(m["threads_by_pid"], pid)
+            ph = _peer_median(m["handles_by_pid"], pid)
+            base_threads = pt if pt else m["threads"]
+            base_handles = ph if ph else m["handles"]
+            thr_ratio = _ratio(d["threads"], base_threads)
+            hdl_ratio = _ratio(d["handles"], base_handles)
+            basis = "同exe同伴中位数(剔除自身)"
 
         # 线程维度
         if d["threads"] >= min_threads and (
@@ -262,7 +303,11 @@ def analyze(probe, min_threads=MIN_THREADS_ABS, min_handles=MIN_HANDLES_ABS,
                 "reasons": reasons,
             })
         # 句柄维度（独立于线程维度：Weixin 样本句柄爆炸但线程数正常）
-        elif d["handles"] >= min_handles and hdl_ratio >= burst:
+        # 🔴 单实例组用**更低的绝对下限**（grok 4.7 复核指出，原来的 50000 兜不住
+        #    wetype_renderer 的 21889 个句柄 —— 它是全局中位数的 100 倍却查不出来）。
+        #    单实例没有「同伴」可对照，全局倍数 + 绝对下限共同兜底。
+        hdl_min = min_handles if not solo else min(min_handles, SOLO_HANDLES_ABS)
+        if d["handles"] >= hdl_min and hdl_ratio >= burst:
             findings.append({
                 "pid": pid, "name": d.get("name"), "kind": "handle",
                 "threads": d["threads"], "handles": d["handles"],

@@ -505,13 +505,13 @@ def main():
                            verdict))
                 out()
                 out("> 判读: **句柄/线程高 ≠ 该杀**。必须同时看 CPU 增量与存活时长——")
-                out("> 实测 WorkBuddy 宿主 51500 句柄但 CPU 3.1%（在干活）→ **不能杀**；")
-                out("> Weixin 主进程 177790 句柄、CPU≈0%、存活 187 小时 → 才是「累积未释放」的真泄漏信号。")
+                out("> 实测 WorkBuddy 宿主 6.1 万句柄但 CPU 增量 1.2%（在干活）→ **不能杀**；")
+                out("> `wetype_renderer` 2.2 万句柄、CPU 0%、存活 193 小时 → 才是「累积未释放」的嫌疑信号。")
                 out("> 判据必须三合一：**句柄/线程异常 + CPU≈0 + 存活时间长** → 才值得动。")
-                out("> （SysWatch 这类工具只按固定阈值报「句柄泄漏」，会连 System(9142)/msedge(8777) 一起误报——")
-                out(">  本工具用「相对同 exe 中位数倍数」就是为了消掉这类误报。）")
+                out("> （SysWatch 这类工具只按固定阈值报「句柄泄漏」，会连 System(8582)/msedge(9158) 一起误报——")
+                out(">  本工具用「绝对阈值 + 相对参照系倍数」两道判据来消掉这类误报。）")
             else:
-                out("- 无异常候选（线程 ≥%d 或 句柄 ≥%d，且相对同 exe 中位数 ≥%.0fx）"
+                out("- 无异常候选（线程 ≥%d 或 句柄 ≥%d，且相对参照系 ≥%.0fx）"
                     % (thp.MIN_THREADS_ABS, thp.MIN_HANDLES_ABS, thp.BURST_RATIO))
 
             # ---- 4c 句柄类型分解（把「句柄多」变成可行动的根因）----
@@ -538,36 +538,55 @@ def main():
                         out()
                         out("- 工具: Sysinternals Handle `-p <pid> -a`")
                         out("- 🔴 必须加 `-a`: 默认只列**有名字**的句柄。实测 Weixin 主进程")
-                        out("  178033 个句柄，默认输出仅 **487 行**（只枚举到 4020 号槽位）——")
+                        out("  19 万个句柄，默认输出仅 **489 行**（全部有名字，最大句柄值 0xBBBF0）——")
                         out("  拿默认输出下结论会得出完全相反的判断。")
                         for f in handle_cands[:3]:
                             pid = int(f["pid"])
                             out()
                             out("#### pid=%d (%s) 句柄=%d" % (pid, f["name"], f["handles"]))
                             try:
+                                truth_before = htb.process_handle_count(htb.ps_exe(), pid)
                                 _, hlines = htb.list_handles(htb_exe, pid)
+                                truth_after = htb.process_handle_count(htb.ps_exe(), pid)
                                 htypes, hprocs = htb.parse_types(hlines)
-                                truth = htb.process_handle_count(htb.ps_exe(), pid)
-                                out("- Handle -a 列出 %d 个；Get-Process 报告 %s 个 %s"
+                                ck, _ = htb.cross_check(truth_before, len(hlines), truth_after)
+                                out("- Handle -a 列出 %d 个；Get-Process 枚举前 %s / 枚举后 %s -> %s"
                                     % (len(hlines),
-                                       truth if truth is not None else "?",
-                                       "（一致 ✓）" if truth == len(hlines) else "（不一致 ✗）"))
+                                       truth_before if truth_before is not None else "?",
+                                       truth_after if truth_after is not None else "?",
+                                       ck))
                                 out()
                                 out("| 句柄类型 | 数量 | 占比 |")
                                 out("|---|---|---|")
                                 tot = len(hlines) or 1
                                 for t, c in sorted(htypes.items(), key=lambda kv: -kv[1])[:8]:
                                     out("| %s | %d | %.2f%% |" % (t, c, c * 100.0 / tot))
-                                gone = hprocs.get("__gone__", 0)
+                                n_proc = htypes.get("Process", 0)
+                                gone = hprocs.get("gone_total", 0)
                                 if gone:
                                     out()
-                                    out("- 🔴 指向**已退出进程**的僵尸句柄 **%d 个 (%.2f%%)**"
-                                        % (gone, gone * 100.0 / tot))
-                                    refs = sorted(((k, v) for k, v in hprocs.items()
-                                                   if k != "__gone__"), key=lambda kv: -kv[1])[:5]
-                                    out("  泄漏源 pid: " + ", ".join(
+                                    out("- 🔴 指向**已退出进程**的僵尸句柄 **%d 个**" % gone)
+                                    out("  · 占全部句柄 %.2f%%（分母 %d）"
+                                        % (gone * 100.0 / tot, tot))
+                                    out("  · 占 Process 类句柄 %.2f%%（分母 %d）"
+                                        % (gone * 100.0 / n_proc if n_proc else 0, n_proc))
+                                    refs = sorted(hprocs.get("gone_refs", {}).items(),
+                                                  key=lambda kv: -kv[1])[:5]
+                                    out("  已退出目标 pid: " + ", ".join(
                                         "%s(%d)" % (k, v) for k, v in refs))
-                                    out("  → 这些进程已退出，但句柄仍被持有且从未 CloseHandle")
+                                    out("  → 这些进程**确已退出**，句柄仍被持有且从未 CloseHandle")
+                                live = hprocs.get("live_total", 0)
+                                if live:
+                                    out()
+                                    out("- ⚪ 指向**存活进程**的 Process 句柄 **%d 个**（非泄漏存量）" % live)
+                                    refs = sorted(hprocs.get("live_refs", {}).items(),
+                                                  key=lambda kv: -kv[1])[:5]
+                                    names = hprocs.get("live_names", {})
+                                    out("  存活目标 pid: " + ", ".join(
+                                        "%s(%d, %s)" % (k, v, names.get(k, "?"))
+                                        for k, v in refs))
+                                    out("  → 目标**还活着**。新增的这类句柄 = 增长源在此，")
+                                    out("    别默认归给已退出的僵尸。")
                             except Exception as e:
                                 out("- [warn] 分解失败: %s" % e)
                 except Exception as e:
