@@ -449,9 +449,54 @@ python tools\stuck_process_cleanup.py
 
 # 4. 确认演练输出符合预期后再实清
 python tools\stuck_process_cleanup.py --apply
+
+# 5. 回收「已关闭会话窗口」遗留的空壳（实测能省近 10GB）
+python tools\stale_session_cleanup.py
+python tools\stale_session_cleanup.py --apply
 ```
 
 体检报告每份都自带「与上次对比」，连续跑第二次起就能看到趋势和「疑似新泄漏」报警。
+
+## 会话空壳回收（实测省下 9.83GB）
+
+> 2026-10-30 实测本机：31 个 `WorkBuddy.exe` 里只有 **1 个**有可见窗口，
+> 另外 30 个是已关闭会话留下的空壳。其中 20 个建于 26–48 小时前，
+> 带着 **164 个进程 / 9.83GB / 26759 句柄** —— 相当于白占内存的一半。
+
+```powershell
+python tools\stale_session_cleanup.py            # 演练
+python tools\stale_session_cleanup.py --apply    # 实清
+```
+
+### 主判据是「会话心跳文件」，不是 CPU
+
+每个活着的会话窗口，WorkBuddy 会在
+`%USERPROFILE%\.workbuddy\sessions\<PID>.json` 写一个心跳文件
+（`sessionId` / `lastHeartbeat` / `url`）。**会话窗口关闭后这个文件不会留下**。
+
+实测：24 个会话窗口进程里**只有 4 个**有会话文件，其余 20 个全是空壳。
+
+> 🔴 **不要用 CPU 增量当主判据**。实测被关闭 43 小时的窗口里，
+> MCP server（`mcp/start.mjs` / `cli.cjs` / `rea.mjs`）仍在 **4.7%–21.9%**
+> 的「心跳式」空转，看起来像在干活，实际是**没有客户端在读它的 stdout 管道**。
+> CPU 增量降级为次要守卫（只拦极端值）。
+
+### 三层守卫
+
+| 守卫 | 作用 |
+|---|---|
+| 当前会话的整棵子树 | 绝不动当前对话 |
+| 组内含近期活跃会话 | 容器进程里会**再开新会话**（实测 417520 建于 48.5h，却带着 3 个今天开的会话）→ 整组放弃 |
+| 组内含用户主动开着的工具 | 实测踩过：本地控制台挂在某个 43 小时前的旧窗口下，第一次清理时被一起带走 → 端口直接不通 |
+
+### 实测效果
+
+| 指标 | 清理前 | 清理后 |
+|---|---|---|
+| 可用物理内存 | 577 MB | **1759 MB**（×3.0） |
+| 已提交 | 49.0 GB | **37.1 GB**（−11.9 GB） |
+| 进程数 | 578 | 425（−153） |
+| `WorkBuddy.exe` | 31 | 12（−19） |
 
 ## 本地控制台（Windows 上点开就能用，不用问 AI）
 
@@ -613,6 +658,7 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | `tools/check_doc_consistency.py` | 文档一致性核验（构成表加总 / 两文档同指标 / 已作废说法残留） | 普通 |
 | `tools/codex_sandbox_cleanup.py` | Codex 沙箱泄漏定点回收 | 管理员 |
 | `tools/stuck_process_cleanup.py` | 挂死进程回收（explorer / 挂死命令行链 / 句柄泄漏） | 管理员 |
+| `tools/stale_session_cleanup.py` | **会话空壳回收**（已关闭会话窗口遗留的空壳，实测省 9.83GB） | 普通 |
 | `tools/hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | 管理员 |
 | `tools/trim_experiment.py` | 复现「trim 只降 WS 不降 Private」的实验脚本 | 普通 |
 

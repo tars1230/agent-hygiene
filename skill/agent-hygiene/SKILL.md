@@ -156,6 +156,7 @@ Windows 工作站做定期体检。
 | `check_doc_consistency.py` | 文档一致性核验：构成表加总、两份文档同指标、已作废说法残留、**已安装 skill 副本 vs 仓库版** | **只读**，退出码 0 = 全一致 |
 | `codex_sandbox_cleanup.py` | Codex 沙箱 VM 泄漏回收（两档 + 四守卫 + 年龄门槛） | 会动服务，需 `--apply` |
 | `stuck_process_cleanup.py` | 挂死进程回收（explorer 线程泄漏 / 挂死命令行链 / 句柄泄漏） | 会杀进程，需 `--apply` |
+| `stale_session_cleanup.py` | **会话空壳回收**：已关闭的会话窗口遗留的空壳进程组（实测省 9.83GB / 164 进程） | 会杀进程，需 `--apply` |
 | `hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | list/props 只读 |
 | `trim_experiment.py` | 复现「trim 只降 WS 不降 Private」 | 只读 |
 
@@ -201,6 +202,24 @@ powershell -ExecutionPolicy Bypass -File .\windows\install-shortcut.ps1
 > 中文注释变乱码会把引号解析搞崩（实测报「语句块中缺少右"}"」）。
 > 🔴 装脚本里的 `$env:LOCALAPPDATA` 可能为空（IDE 托管上下文实测为空），
 > 必须按「环境变量 → 已知路径推导 → 兜底家目录」三级解析，否则 `Join-Path` 直接抛错。
+
+### 会话空壳（最大的一块可回收内存）
+
+```powershell
+python tools/stale_session_cleanup.py            # 演练
+python tools/stale_session_cleanup.py --apply    # 实清
+```
+
+**主判据 = 会话心跳文件**：`%USERPROFILE%/.workbuddy/sessions/<PID>.json`
+是活会话才有的；**没有这个文件 = 会话已关闭 = 残留空壳**。
+实测 24 个会话窗口进程里只有 4 个有该文件，其余 20 个占 9.83GB。
+
+> 🔴 **不要用 CPU 增量当主判据**：被关闭 43 小时的窗口里，MCP server
+> 仍在 4.7%–21.9% 空转（没有客户端在读它的 stdout），看起来像在干活。
+> 🔴 **容器进程里会再开新会话**：实测 417520 建于 48.5h，却带着 3 个今天开的
+> 会话 → 必须按**直接子进程**划界 + 组内「近期会话」安全阀，不能按创建时间一刀切。
+> 🔴 **用户主动开着的工具要显式保护**：实测本地控制台挂在某个 43 小时前的旧窗口下，
+> 第一次清理时被一起带走 → 端口直接不通。
 
 ## 工作流
 

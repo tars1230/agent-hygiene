@@ -37,6 +37,7 @@ import sys
 import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nowin  # noqa: E402
+import safe_print  # noqa: E402,F401  (pythonw 下 print 不炸)
 
 # 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
 #    sys.path[0] 只在「以脚本路径直接运行」时才是脚本目录，从别处 import 就找不到了。

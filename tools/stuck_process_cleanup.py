@@ -51,6 +51,7 @@ import sys
 import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nowin  # noqa: E402
+import safe_print  # noqa: E402,F401  (pythonw 下 print 不炸)
 
 # 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
 _HERE = os.path.dirname(os.path.abspath(__file__))
