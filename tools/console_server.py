@@ -181,6 +181,28 @@ def main():
     url = "http://%s:%d/" % (a.host, a.port)
 
     if a.bg and not a.serve:
+        # 🔴 端口已被占用 = 服务已在运行。
+        #    这时**不要**再派生一个（会 OSError 崩掉），
+        #    直接开浏览器指向已有服务即可 —— 双击快捷方式的常见路径。
+        import socket
+        _s = socket.socket()
+        _s.settimeout(1.5)
+        try:
+            _s.connect((a.host, a.port))
+            _s.close()
+            _say("服务已在运行，直接打开浏览器。")
+            if a.open:
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+            return
+        except Exception:
+            try:
+                _s.close()
+            except Exception:
+                pass
+
         # 🔴 真正脱离当前终端的做法：**派生子进程**并用 DETACHED_PROCESS。
         #    不能用 os._exit(0)——那会把整个进程连同服务线程一起杀掉，
         #    服务反而停了（实测踩过）。

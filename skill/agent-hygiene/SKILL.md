@@ -148,6 +148,7 @@ Windows 工作站做定期体检。
 | `console_server.py` | **本地控制台**：浏览器入口（状态/建议/定时任务/历史图表），`127.0.0.1:8765` | 只读 + 可改计划任务 |
 | `console_backend.py` | 控制台后端：状态聚合、配方匹配、历史报告与日志解析 | **只读** |
 | `console_tasks.py` | 计划任务读写（`schtasks` 快路径 0.1s + PowerShell 兜底 5.2s） | 改任务需管理员 |
+| `windows/install-shortcut.ps1` | 桌面「进程刷新」快捷方式安装器（双击即用，零黑框） | 普通 |
 | `fast_probe.py` | 纯 Win32 API 快速采样（**44–94ms**，零子进程，653 进程/73KB） | **只读** |
 | `fast_cmdline.py` | 一次 WMI 取全表命令行（供进程组聚类，20 秒缓存） | **只读** |
 | `thread_handle_probe.py` | 线程/句柄探测（一次 PS 调用取全表，~360ms）+ 中位数倍数判据 | **只读** |
@@ -183,6 +184,23 @@ Windows 工作站做定期体检。
 3. 唯一允许 HTTP 写入的是**计划任务的触发器/参数**，且改 `--kill-handle-leak` 需双保险：
    前端 `confirm()` + 后端 `allow_kill_switch` 校验。任务操作走**白名单**（只 3 个）。
 4. 每次任务改动写 `%LOCALAPPDATA%\agent-hygiene\logs\tasks.log`。
+
+### 桌面入口（用户自己点，不用问 AI）
+
+装一次，桌面就有「进程刷新」图标：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\install-shortcut.ps1
+```
+
+双击 → 后台拉起控制台 + 开浏览器，**零黑框**（快捷方式直指 `pythonw.exe`，不经 `cmd.exe`）。
+已在运行则直接开浏览器，不重复起进程。
+
+> 🔴 `.lnk` **不要**指向 `.cmd`——`.cmd` 必分配控制台，启动器本身那一下黑框照样闪。
+> 🔴 装脚本必须是 **UTF-8 BOM**：PowerShell 5.1 把无 BOM UTF-8 当 ANSI 读，
+> 中文注释变乱码会把引号解析搞崩（实测报「语句块中缺少右"}"」）。
+> 🔴 装脚本里的 `$env:LOCALAPPDATA` 可能为空（IDE 托管上下文实测为空），
+> 必须按「环境变量 → 已知路径推导 → 兜底家目录」三级解析，否则 `Join-Path` 直接抛错。
 
 ## 工作流
 

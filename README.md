@@ -458,6 +458,22 @@ python tools\stuck_process_cleanup.py --apply
 > **什么时候用**：你觉得卡的时候，点开看一眼。
 > 不需要先问 AI、不需要等对话链路、不需要记命令。
 
+### 最省事：桌面图标
+
+```powershell
+# 装一次，桌面就多一个「进程刷新」图标
+powershell -ExecutionPolicy Bypass -File .\windows\install-shortcut.ps1
+```
+
+双击桌面 **「进程刷新」** → 自动后台拉起控制台 + 打开浏览器。
+**没有黑框闪现**（快捷方式直接指向 `pythonw.exe`，不经 `cmd.exe`）。
+已经在跑的时候再双击，不会重复起进程，直接开浏览器。
+
+> 🔴 快捷方式**不要**指向 `.cmd`：`.cmd` 一定会分配控制台，
+> 哪怕脚本内部用 `CREATE_NO_WINDOW` 起服务，启动器本身那一下黑框照样闪。
+
+### 手动启动（等价）
+
 ```powershell
 # 启动（后台，无控制台窗口），浏览器自动打开
 python tools\console_server.py --bg --open
@@ -587,6 +603,7 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 |---|---|---|
 | `tools/agent_hygiene_audit.py` | 体检 + 线程/句柄维度 + 对比报告 | 普通 |
 | `tools/console_server.py` | **本地控制台**（浏览器入口：状态/建议/定时任务/历史图表） | 普通 |
+| `windows/install-shortcut.ps1` | 桌面「进程刷新」快捷方式安装器（双击即用，无黑框） | 普通 |
 | `tools/console_backend.py` | 控制台后端逻辑（状态聚合 / 配方 / 历史解析） | 普通 |
 | `tools/console_tasks.py` | 计划任务读写（schtasks 快路径 + PowerShell 兜底） | 改任务时需管理员 |
 | `tools/fast_probe.py` | 纯 Win32 API 快速采样（**44–94ms**，不 spawn 子进程） | 普通 |
