@@ -1,4 +1,7 @@
-# Agent Hygiene
+# 进程刷新 · Process Refresh for Windows
+
+> **一句话**：给多 AI 助手同开的 Windows 电脑做的**只读内存体检**——
+> 它能看见普通工具看不见的那类泄漏（内存不多但句柄爆表），并且**只诊断，绝不擅自杀进程**。
 
 **English**: Read-only memory hygiene toolkit for Windows workstations running multiple AI agents (Electron-based IDEs/CLIs, helper services, VM sandboxes). It diagnoses, never kills. Windows 10/11 + Python 3.10+. Details below (Chinese).
 
@@ -493,7 +496,7 @@ Register-ScheduledTask -TaskName "AgentHygiene-Weekly" -Action $act2 -Trigger $t
 
 ## WorkBuddy / CodeBuddy 用户：Skill
 
-`skill/agent-hygiene/SKILL.md` 是给 agent 用的说明书（铁律、工作流、配方、竞品对比、输出格式）。拷到 `~/.workbuddy/skills/agent-hygiene/`（或对应 skill 目录）后，对话里说「按 agent-hygiene 查一下内存」即可。
+`skill/agent-hygiene/SKILL.md` 是给 agent 用的说明书（铁律、工作流、配方、竞品对比、输出格式）。拷到 `~/.workbuddy/skills/agent-hygiene/`（或对应 skill 目录）后，对话里说「按进程刷新查一下内存」或「按 agent-hygiene 查一下内存」都能唤起它。
 
 ### 配套的两个纪律 Skill（通用方法论，与本项目解耦）
 

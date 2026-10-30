@@ -1,9 +1,9 @@
 ---
 name: agent-hygiene
-description: AI 宿主/多 agent 电脑的内存体检与定点回收。只读审计区分「在干活」与「泄漏」，识别 Electron 家族、孤儿子进程、HCS 沙箱遗留、shim 重复计数，以及独立于内存口径的线程/句柄泄漏，输出报告与建议命令，默认绝不杀进程。触发词：内存占用、电脑负载、体检、泄漏、清理进程、agent 占用、电脑卡、句柄泄漏、线程泄漏。
+description: 进程刷新（Process Refresh for Windows）—— 多 AI 助手同开的 Windows 电脑做只读内存体检与定点回收。能看见普通工具看不见的那类泄漏：内存不多但句柄爆表。只读审计区分「在干活」与「泄漏」，识别 Electron 家族、孤儿子进程、HCS 沙箱遗留、shim 重复计数，以及独立于内存口径的线程/句柄泄漏，输出报告与建议命令，默认绝不杀进程。触发词：内存占用、电脑负载、体检、泄漏、清理进程、agent 占用、电脑卡、句柄泄漏、线程泄漏、进程刷新。
 ---
 
-# Agent Hygiene —— 多 agent 电脑的内存体检
+# 进程刷新 · Process Refresh for Windows —— 多 agent 电脑的内存体检
 
 给装了多个 AI agent（WorkBuddy / Codex / Cursor / MiniMax / opencode / cline / 各类桥接…）的
 Windows 工作站做定期体检。

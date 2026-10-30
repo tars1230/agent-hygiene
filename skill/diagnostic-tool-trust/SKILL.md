@@ -7,7 +7,8 @@ agent_created: true
 # 诊断工具可信度纪律
 
 > 定位：**跨项目的通用方法论 Skill**。不绑定任何具体工具。
-> 与 `agent-hygiene` 的关系：agent-hygiene 是「内存诊断的专用工具集」，
+> 与 `agent-hygiene`（进程刷新 · Process Refresh for Windows）的关系：
+> agent-hygiene 是「内存诊断的专用工具集」，
 > 本 Skill 是「不管用什么工具，都得先过这七道检查」的通用纪律。agent-hygiene 的铁律是它的实战落地。
 
 ## 何时用

@@ -286,7 +286,8 @@ def main():
         print(s)
         L.append(s)
 
-    out("# Agent Hygiene Audit  %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    out("# 进程刷新 · Process Refresh for Windows — 体检报告  %s"
+        % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     out()
     out("## 0 环境")
     out("- admin=%s  python=%s" % (bool(shell32.IsUserAnAdmin()), sys.version.split()[0]))
