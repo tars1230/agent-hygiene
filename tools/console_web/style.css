@@ -83,9 +83,15 @@ main { max-width: 1180px; margin: 0 auto; padding: 24px 28px 64px; }
 
 /* ---------- 指标卡 ---------- */
 .cards {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  /* 🔴 7 张卡（可用内存/压力/已提交/本套装/异常候选/句柄/进程数）。
+     auto-fit + minmax(160px) 在 1180px 容器里算出来是 6 列 -> 7 张卡会折行，
+     最后一张「进程数」孤零零单独占一行。改成 7 列固定。 */
+  display: grid; grid-template-columns: repeat(7, 1fr);
   gap: 12px; margin-bottom: 24px;
 }
+/* 窄屏降级：一行放不下就退回 4 列 / 2 列，而不是挤成一团 */
+@media (max-width: 1080px) { .cards { grid-template-columns: repeat(4, 1fr); } }
+@media (max-width: 700px)  { .cards { grid-template-columns: repeat(2, 1fr); } }
 .card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 16px 18px;
