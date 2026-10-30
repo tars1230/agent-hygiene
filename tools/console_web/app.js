@@ -63,6 +63,19 @@ function renderStatus(st) {
   $('m-handles').textContent = fmt(st.total_handles);
   $('m-handles-hint').textContent = '全系统合计';
 
+  // 微信族占用（只读观察指标，不给「可回收量」）
+  // 🔴 实测杀 WMPF 根进程 15 秒就被微信拉起 → 杀进程无效；
+  //    trim 的 ABBA 差分净效应是可用内存 −0.68GB（负收益）→ 都不作为「可省多少」上报。
+  const wc = st.wechat || {};
+  $('m-wechat').textContent = wc.total_mb ? mb(wc.total_mb) : '未运行';
+  $('m-wechat-hint').textContent = wc.total_mb
+    ? `${wc.procs || 0} 个进程 · 其中小程序容器 ${wc.wmpf_mb || 0}MB（${wc.wmpf_procs || 0} 进程，占 ${wc.wmpf_pct || 0}%）`
+    : '未检测到微信进程';
+  const cWechat = $('card-wechat');
+  cWechat.classList.toggle('alert', (wc.pct_of_used || 0) >= 10);
+  cWechat.classList.toggle('warn', (wc.pct_of_used || 0) >= 5 &&
+                                 (wc.pct_of_used || 0) < 10);
+
   $('m-proc').textContent = fmt(st.proc_count);
   $('m-proc-hint').textContent = st.degraded ? (st.degraded + ' 个权限受限') : '全部可读';
 
@@ -85,6 +98,7 @@ function renderStatus(st) {
 
   renderFindings(st);
   renderGroups(st);
+  renderWechat(st);
 }
 
 function renderFindings(st) {
@@ -110,6 +124,44 @@ function renderFindings(st) {
       </div>
     </div>`;
   }).join('');
+}
+
+function renderWechat(st) {
+  const panel = $('panel-wechat');
+  const wc = st.wechat || {};
+  // 微信没在跑就不占版面
+  panel.hidden = !wc.total_mb;
+  if (!wc.total_mb) return;
+
+  $('wechat-warn').hidden = (wc.wmpf_pct || 0) < 30;
+  const body = wc.wmpf_mb + (wc.total_mb - wc.wmpf_mb);
+  $('wechat-body').innerHTML =
+    '<table><thead><tr><th>部分</th><th>进程数</th><th>Private</th><th>占微信</th></tr></thead><tbody>' +
+    `<tr>
+      <td class="name">小程序容器 <code>WeChatAppEx.exe</code></td>
+      <td class="num">${wc.wmpf_procs || 0}</td>
+      <td class="num">${mb(wc.wmpf_mb)}</td>
+      <td class="num">${wc.wmpf_pct || 0}%</td>
+    </tr>
+    <tr>
+      <td class="name">主进程 + 聊天 <code>Weixin.exe</code></td>
+      <td class="num">${Math.max((wc.procs || 0) - (wc.wmpf_procs || 0) - (wc.ime_procs || 0), 0)}</td>
+      <td class="num">${mb(body - (wc.ime_mb || 0))}</td>
+      <td class="num">${wc.total_mb ? Math.round((body - (wc.ime_mb || 0)) / wc.total_mb * 100) : 0}%</td>
+    </tr>
+    <tr>
+      <td class="name">微信输入法 <code>wetype_*</code></td>
+      <td class="num">${wc.ime_procs || 0}</td>
+      <td class="num">${mb(wc.ime_mb)}</td>
+      <td class="num">${wc.total_mb ? Math.round((wc.ime_mb || 0) / wc.total_mb * 100) : 0}%</td>
+    </tr>
+    <tr>
+      <td class="name"><b>合计</b></td>
+      <td class="num"><b>${wc.procs || 0}</b></td>
+      <td class="num"><b>${mb(wc.total_mb)}</b></td>
+      <td class="num">100%</td>
+    </tr>
+    </tbody></table>`;
 }
 
 function renderGroups(st) {

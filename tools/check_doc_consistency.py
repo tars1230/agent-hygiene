@@ -50,6 +50,51 @@ PAIR_CHECKS = [
     ("explorer 泄漏 pid", r"13092", "explorer 泄漏样本 pid"),
     ("Handle 默认输出行数", r"489", "不加 -a 的输出行数"),
     ("Handle 最大句柄值", r"0xBBBF0", "不加 -a 的最大句柄值"),
+    # 2026-10-30 微信内存结构实测（README 与 SKILL 铁律 21/22 都引用）
+    ("WMPF 容器 Private", r"698\.6", "微信 WMPF 小程序容器 Private(MB)"),
+    ("WMPF 容器占比", r"49\.3%", "WMPF 占微信内存比例"),
+    ("微信进程总数 Private", r"1415\.7", "微信 17 进程 Private 合计(MB)"),
+    ("trim 差分净效应", r"0\.68", "trim ABBA 差分净效应(GB)"),
+    ("trim 差分已提交", r"0\.9", "trim ABBA 差分已提交增量(GB)"),
+]
+
+# 🔴 「同值校验」：同一个指标在每份文档里必须**值相同且唯一**。
+#
+#    2026-10-30 负向验证连抓两轮真缺陷，判据被两次打脸：
+#      第 1 轮缺陷：只判「两边都有这个数字」→ 把 README 的 698.6 改成 699.9（SKILL 不改）
+#                   → 两边「都有 WMPF 相关内容」→ 门禁报 PASS。
+#      第 2 轮缺陷：加了「两边都必须是 698.6」→ 但 README 里这个数字**出现 2 次**
+#                   （表格 1 次 + 正文 1 次），只改其中 1 处 → 另一处仍是 698.6
+#                   → 门禁仍报 PASS。
+#    → 正确判据：**逐文档抽取该指标的所有实际值，要求并集恰好 1 个，且两文档相同。**
+#      只要任何一处被改 → 抽取到的值集合要么变大、要么与另一份文档不等 → FAIL。
+#
+#    抽取靠「锚点 + 单位」正则，避免全文找裸数字（否则 879MB / 100% 之类会混进来）。
+#    group(1) 必须是捕获到的数值。
+#
+# (指标名, 说明, {文档路径: [pattern, ...]})
+SAME_VALUE_CHECKS = [
+    ("WMPF 容器 Private", "WMPF 容器 Private(MB)", {
+        README: [r"\|\s*\*\*WMPF 小程序容器\*\*[^\n]*?(\d+(?:\.\d+)?)\s*MB"],
+        SKILL:  [r"占微信内存[^）]{0,40}?(\d+(?:\.\d+)?)\s*MB"],
+    }),
+    ("WMPF 容器占比", "WMPF 占微信内存比例(%)", {
+        README: [r"\|\s*\*\*WMPF 小程序容器\*\*[^\n]*?(\d+(?:\.\d+)?)\s*%",
+                 r"占微信\s*(\d+(?:\.\d+)?)\s*%"],
+        SKILL:  [r"占微信内存[^）]{0,40}?(\d+(?:\.\d+)?)\s*%"],
+    }),
+    ("微信进程总数 Private", "微信 17 进程 Private 合计(MB)", {
+        README: [r"\|\s*合计\s*\|\s*\d+\s*\|\s*\*\*(\d+(?:\.\d+)?)\s*MB"],
+        SKILL:  [r"Private 合计\s*\*\*(\d+(?:\.\d+)?)MB"],
+    }),
+    ("trim 差分净效应", "trim ABBA 净效应(GB)", {
+        README: [r"可用内存\s*[−\-]?(\d+(?:\.\d+)?)\s*GB"],
+        SKILL:  [r"可用内存\s*[−\-]?(\d+(?:\.\d+)?)\s*GB"],
+    }),
+    ("trim 差分已提交", "trim ABBA 已提交增量(GB)", {
+        README: [r"已提交\s*\+(\d+(?:\.\d+)?)\s*GB"],
+        SKILL:  [r"已提交\s*\+(\d+(?:\.\d+)?)\s*GB"],
+    }),
 ]
 
 # 已作废、不得再出现在正文里的旧说法
@@ -111,6 +156,41 @@ def main():
         else:
             fails.append("%s（%s）两份文档都没有" % (desc, pat))
             print("  [FAIL] %-22s 两边都没有" % label)
+
+    print()
+    print("=== 2b) 同一指标在两份文档里的**值必须相同且唯一** ===")
+    for label, desc, patterns in SAME_VALUE_CHECKS:
+        per_doc = {}
+        for path, pats in patterns.items():
+            vals = []
+            for pat in pats:
+                for m in re.finditer(pat, files[path]):
+                    vals.append(m.group(1))
+            per_doc[path] = sorted(set(vals))
+        r_vals = per_doc.get(README, [])
+        s_vals = per_doc.get(SKILL, [])
+        all_vals = sorted(set(r_vals) | set(s_vals))
+        # 🔴 三条独立判据，缺一不可：
+        #   ① 两份文档**都**必须抽到值（缺一边 = 该指标在一边被删掉了）
+        #   ② 并集必须**唯一**（多个值 = 同一指标在文档里自相矛盾）
+        #   ③ 两边必须**相等**（不等 = 两处写的数不一样）
+        # 早期版本只判「两边都有」→ 改了一边的数字反而 PASS（负向验证实测打脸）。
+        missing = [os.path.basename(p) for p, v in per_doc.items() if not v]
+        if missing:
+            fails.append("%s：在 %s 里抽不到值 —— 该指标被删除或改写导致无法复核"
+                         % (desc, "、".join(missing)))
+            print("  [FAIL] %-22s 缺值：%s（README=%s SKILL=%s）"
+                  % (label, "、".join(missing), r_vals, s_vals))
+        elif len(all_vals) > 1:
+            fails.append("%s：抽到多个不同值 %s —— 同一指标在文档里不一致"
+                         % (desc, all_vals))
+            print("  [FAIL] %-22s 值不唯一：README=%s SKILL=%s"
+                  % (label, r_vals, s_vals))
+        elif r_vals != s_vals:
+            fails.append("%s：README=%s 与 SKILL=%s 不等" % (desc, r_vals, s_vals))
+            print("  [FAIL] %-22s 两边不等：README=%s SKILL=%s" % (label, r_vals, s_vals))
+        else:
+            print("  [ok]   %-22s 两边同值 %s" % (label, all_vals[0]))
 
     print()
     print("=== 3) 已作废说法残留检查 ===")

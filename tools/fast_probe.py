@@ -172,6 +172,7 @@ def snapshot(need_handles=True, need_cpu=True):
             ppid = int(pe.th32ParentProcessID)
             handles = None
             priv_mb = None
+            ws_mb = None
             ph = None
             if need_handles or True:
                 ph = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -189,12 +190,20 @@ def snapshot(need_handles=True, need_cpu=True):
                         # 🔴 用 PagefileUsage(= Private Bytes)，不是 WorkingSetSize。
                         #    WS 会被系统 trim，不能当占用量报。
                         priv_mb = round(mc.PagefileUsage / (1024.0 * 1024.0), 1)
+                        # 🔴 WS 单独留一列，但**不是**「可回收量」。
+                        #    WS 与 Private 的差值只是**瞬时状态**：trim 会把页换出到
+                        #    页面文件 → 已提交(Commit)反而上升、可用物理内存不升反降。
+                        #    ABBA 差分实测（tools/trim_ab_test.py）：净效应
+                        #    可用内存 -0.68GB / 已提交 +0.9GB → trim 在本机是负收益。
+                        #    WS 列的用途 = 观察「驻留 vs 提交」的偏离，不作占用量。
+                        ws_mb = round(mc.WorkingSetSize / (1024.0 * 1024.0), 1)
                 k32.CloseHandle(ph)
             elif need_handles:
                 degraded += 1
 
             rec = {"name": name, "ppid": ppid, "threads": threads,
-                   "handles": handles, "priv_mb": priv_mb, "cpu_ticks": None}
+                   "handles": handles, "priv_mb": priv_mb,
+                   "ws_mb": ws_mb, "cpu_ticks": None}
             if need_cpu:
                 rec["cpu_ticks"] = _cpu_ticks(pid)
             out[pid] = rec

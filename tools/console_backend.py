@@ -280,6 +280,46 @@ def status(cpu_state=None):
         {"name": k, "priv_mb": round(v["priv_mb"], 1), "procs": v["procs"]}
         for k, v in sorted(fam.items(), key=lambda kv: -kv[1]["priv_mb"])]
 
+    # ---- 微信族占用（只读观察指标） ----
+    # 🔴 为什么单独拎出来：实测微信是 17 个进程 / 1415.7MB，其中
+    #    WMPF 小程序容器（WeChatAppEx.exe）9 个进程占 698.6MB = 49.3%，
+    #    且**零可见窗口、30 秒 CPU 增量全 0.00%** —— 纯占内存不干活。
+    #    「我觉得卡，点开看一眼」的场景里，这个数字直接可行动：
+    #    微信 → 设置 → 通用 → 发现页管理 → 关小程序/视频号入口。
+    #
+    # 🔴 口径说明（为什么不给「可回收量」）：
+    #    实测杀 WMPF 根进程 → **15 秒内被微信重新拉起**，物理可用内存反而 −0.22GB。
+    #    → **能省的前提是「宿主不再拉起它」**，杀进程本身无效。
+    #    → 所以本指标**只报占用，不报「能省多少」**，避免误导。
+    #    trim 也不作为「可回收量」上报：ABBA 差分实测净效应可用内存 −0.68GB（负收益）。
+    WECHAT_BODY = ("weixin.exe",)
+    WECHAT_WMPF = ("wechatappex.exe",)
+    WECHAT_IME = ("wetype_server.exe", "wetype_renderer.exe", "wetype_service.exe")
+
+    def _sum_by(names):
+        mb = 0.0
+        cnt = 0
+        for pid, r in procs.items():
+            if (r["name"] or "").lower() in names:
+                mb += r["priv_mb"] or 0.0
+                cnt += 1
+        return mb, cnt
+
+    w_body_mb, w_body_n = _sum_by(WECHAT_BODY)
+    w_wmpf_mb, w_wmpf_n = _sum_by(WECHAT_WMPF)
+    w_ime_mb, w_ime_n = _sum_by(WECHAT_IME)
+    w_total = w_body_mb + w_wmpf_mb + w_ime_mb
+    wechat = {
+        "total_mb": round(w_total, 1),
+        "procs": w_body_n + w_wmpf_n + w_ime_n,
+        "pct_of_used": round(w_total / total_priv * 100, 1) if total_priv else 0,
+        "wmpf_mb": round(w_wmpf_mb, 1),
+        "wmpf_procs": w_wmpf_n,
+        "wmpf_pct": round(w_wmpf_mb / w_total * 100, 1) if w_total else 0,
+        "ime_mb": round(w_ime_mb, 1),
+        "ime_procs": w_ime_n,
+    }
+
     return {
         "ts": now,
         "mem": mem,
@@ -289,6 +329,7 @@ def status(cpu_state=None):
         "total_handles": total_h,
         "total_priv_mb": round(total_priv, 1),
         "suite": suite,
+        "wechat": wechat,
         "findings": findings,
         "groups": groups,
         "cpu_window_sec": round(window, 1),
@@ -400,6 +441,54 @@ def tasks(force=False):
 
 
 _TASK_CACHE = {}
+
+
+# ------------------------------------------------- 系统计划任务全景（可关闭性研判）
+#
+# 与上面的 tasks() 是**两个层次**，不要混：
+#   tasks()        → 本项目自己的 3 个任务，可读可改（白名单）
+#   task_inventory() → 系统上**全部** 255 个计划任务，只读 + 给出建议动作
+#
+# 用户诉求（2026-10-30）：
+#   「有没有一个功能，能够看到所有系统加载的定时任务，类似这次清理的我不知道还有哪些，
+#     不然系统发生了什么我也不知道，哪些是不是可以关掉我也不清楚」
+#
+# 🔴 缓存策略与 tasks() 不同：
+#   schtasks 全量查询实测 2.58 秒，不算慢，但也没必要每次轮询都跑。
+#   缓存 60 秒足够（用户视角任务配置变化极低频）。
+_INV_CACHE = {}
+_INV_TTL = 60
+
+
+def task_inventory(force=False):
+    """全量计划任务 + 可关闭性研判（只读，不改系统）。"""
+    now = time.time()
+    if not force and now - _INV_CACHE.get("_ts", 0) < _INV_TTL:
+        return _INV_CACHE["data"]
+    try:
+        import task_inventory as ti
+        data = ti.collect()
+    except Exception as e:
+        data = {"error": str(e), "summary": {}, "tasks": []}
+    data["scannedAt"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    _INV_CACHE["_ts"] = now
+    _INV_CACHE["data"] = data
+    return data
+
+
+def task_state(name, enable, confirm=False):
+    """启用/禁用任意第三方计划任务（可逆）。
+
+    🔴 安全规则全部写在 task_control.py 里（硬拒绝系统任务、需显式确认）。
+    本层只做转发 + 失效缓存。
+    """
+    try:
+        import task_control
+        r = task_control.set_state(name, enable, confirm=confirm)
+    except Exception as e:
+        r = {"ok": False, "error": str(e)}
+    task_inventory(force=True)   # 改完立刻重扫，下次读是新的
+    return r
 
 
 # ---------------------------------------------------------------- 历史

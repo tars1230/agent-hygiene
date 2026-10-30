@@ -44,6 +44,11 @@
       <p class="value" id="m-suite">—</p>
       <p class="hint" id="m-suite-hint">—</p>
     </div>
+    <div class="card" id="card-wechat">
+      <p class="label">微信占用</p>
+      <p class="value" id="m-wechat">—</p>
+      <p class="hint" id="m-wechat-hint">—</p>
+    </div>
     <div class="card" id="card-anomaly">
       <p class="label">异常候选</p>
       <p class="value" id="m-anomaly">—</p>
@@ -59,6 +64,24 @@
       <p class="value" id="m-proc">—</p>
       <p class="hint" id="m-proc-hint">—</p>
     </div>
+  </section>
+
+  <!-- ============ 微信内存结构 ============ -->
+  <section class="panel" id="panel-wechat" hidden>
+    <div class="panel-head">
+      <h2>微信内存结构</h2>
+      <span class="badge-warn" id="wechat-warn" hidden>小程序容器占微信内存近半</span>
+    </div>
+    <p class="panel-note">
+      微信的内存大头不是聊天，是<b>小程序容器</b>（<code>WeChatAppEx.exe</code>）——
+      零可见窗口、CPU 常年 0.00%，纯占内存不干活。
+      <br>
+      🔴 实测<b>杀掉它没用</b>：15 秒内微信会重新拉起，可用内存反而 −0.22GB。
+      要省只能<b>关入口</b>：微信 → 设置 → 通用 → 发现页管理 → 关掉小程序 / 视频号。
+      <br>
+      微信输入法（<code>wetype_*</code>）是独立进程组，跟微信本体无关，可单独关。
+    </p>
+    <div id="wechat-body"></div>
   </section>
 
   <!-- ============ 需要注意 ============ -->

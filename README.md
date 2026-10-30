@@ -50,7 +50,7 @@ python tools\stuck_process_cleanup.py
 | **配方** | 针对某一种已知泄漏模式的回收脚本 |
 | **CPU 155%** | 这个进程用了 1.55 个 CPU 核心。**多核机器上超过 100% 是正常的** |
 | **Electron** | 一类「网页套壳」程序。VS Code / Cursor / WorkBuddy / Edge 都是它做的，一个窗口能开十几个进程 |
-| **trim（工作集瘦身）** | 一种「清理内存」的常规手段。本项目实测它**没用**（见下方表格） |
+| **trim（工作集瘦身）** | 一种「清理内存」的常规手段。本项目用 **ABBA 差分实验**实测它在本机是**负收益**（可用内存 −0.68GB），见下方表格 |
 
 ## 大白话讲清楚它解决了什么
 
@@ -132,13 +132,14 @@ python tools/stuck_process_cleanup.py --apply --sample-sec 3
 所以本项目坚持**两个数分开报**：「释放了多少 Private 内存」和「可用内存涨了多少」。
 只报前一个会让人失望，只报后一个会掩盖真实收益。
 
-### 被实测推翻的三类流行做法
+### 被实测推翻的四类流行做法
 
 | 流行做法 | 实测结论 |
 |---|---|
-| 定时 trim 工作集（清内存的常规手段） | `SetProcessWorkingSetSize(-1,-1)` 只降「工作集」，**真正占用的 Private 一分不减**（`tools/trim_experiment.py` 可复现） |
+| 定时 trim 工作集（清内存的常规手段） | 单次实验看着像赚（WS 935→24MB、可用 +0.38GB），**ABBA 差分实验推翻了它**：净效应 **可用内存 −0.68GB / 已提交 +0.9GB**。trim 把页强制换出到页面文件 → 提交量上升、可用物理内存反降。**WS−Private 的差值是瞬时状态，不是可持续可回收量**（`tools/trim_ab_test.py` 可复现） |
 | 「看起来占内存 = 泄漏 = 该杀」 | 一个 954MB 的 agent 进程其实正在跑任务（CPU 530 秒）。**杀错正在干活的 agent 比泄漏本身更伤** |
 | 「句柄数 > 3000 就是句柄泄漏」 | 实测 System 8582 / msedge 9158 / WeChatAppEx 8479 **全是正常的**。必须看「相对同 exe 同伴中位数的倍数」+ 绝对阈值 |
+| 「杀掉占内存的进程就能省内存」 | 实测杀掉微信 WMPF 容器（占微信 49.3% 内存）后 **15 秒就被微信重新拉起**，物理可用内存反而 **−0.22GB**。**能省的前提是「宿主不再拉起它」**（见下方「微信内存结构实测」） |
 
 ---
 
@@ -498,6 +499,45 @@ python tools\stale_session_cleanup.py --apply    # 实清
 | 进程数 | 578 | 425（−153） |
 | `WorkBuddy.exe` | 31 | 12（−19） |
 
+## 微信内存结构实测（17 个进程，1.4GB，其中一半在小程序容器里）
+
+> 采样：2026-10-30 15:36，本机微信 4.1.15.13。用本仓库的 `tools/fast_probe.py` 采的
+> （口径 = Private/PagefileUsage）。同一次采样里系统物理可用 1.51GB / 负载 90%。
+
+微信不是「一个程序」，而是 **17 个进程**。按角色拆开：
+
+| 角色 | 进程数 | Private | 占比 | 是什么 |
+|---|---|---|---|---|
+| **WMPF 小程序容器**（`WeChatAppEx.exe`） | 9 | **698.6 MB** | **49.3%** | 小程序/视频号的渲染容器（Chromium 系） |
+| **微信主进程 + 聊天**（`Weixin.exe`） | 5 | 482.4 MB | 34.1% | 主进程 266MB + xplayer 104MB + wxocr 90MB + wxutility/wxpublic 22MB |
+| **微信输入法**（`wetype_*`） | 3 | 234.7 MB | 16.6% | 独立进程组，**跟微信本体无关**，可单独关 |
+| 合计 | 17 | **1415.7 MB** | 100% | |
+
+### 三个关键结论
+
+**① 杀掉它没用，宿主会立刻拉回来。**
+实测 `taskkill /F /T` 掉 WMPF 根进程 → **15 秒内 9 个进程全复活**，
+物理可用内存反而 **−0.22GB**（重建实例要重新分配）。
+→ 「杀掉占内存的进程」这条路，**前提是宿主不再拉起它**。
+
+**② 关掉入口才有用。**
+WMPF 的 9 个进程**零可见窗口**、**30 秒 CPU 增量全 0.00%** —— 它们纯占内存不干活。
+但**没有无 GUI 的可靠手段**能让微信别拉起它们：
+- 客户端配置（349 个 `clicfg_*` 键，如 `clicfg_xwechat_multi_process_max_count`）是**服务端下发**，本地改会被覆盖；
+- 本地 MMKV（`xwechat/radium/mmkv/`）**payload 加密**，实测解析报 `未知 wire type 4` → 改不了；
+- 唯一可行的入口是微信自己的 GUI：**微信 → 设置 → 通用 → 发现页管理** → 关掉小程序/视频号。
+
+**③ 逆向拆分不成立。**
+`Weixin.dll` = **192.2 MB 原生 C++（Qt + Skia + cronet）**，**没有 JS bundle 边界** →
+无法把「聊天」和「其他功能」切出来。插件目录 `xplugin/plugins/`（RadiumWMPF 879MB 等）
+每个文件都带 `md5` + `signature`，**改了会被检测并重新下载**。
+→ **收益 ≈ 0，风险全在用户**（签名校验失败、功能残缺）。
+
+### 顺带可清（磁盘，不是内存）
+
+`xwechat/log/*.xlog` = **1.2 GB / 11 天**，加 76 个 applet 缓存目录。
+纯磁盘收益，跟「动态有更多富余」无关——本项目**不把它算作内存优化**。
+
 ## 本地控制台（Windows 上点开就能用，不用问 AI）
 
 > **什么时候用**：你觉得卡的时候，点开看一眼。
@@ -531,12 +571,19 @@ python tools\console_server.py --check
 
 | 区域 | 回答什么问题 | 数据来源 |
 |---|---|---|
-| **指标卡**（7 张） | 现在内存还剩多少？本套装占了多少？有没有异常候选？ | 纯 Win32 API 采样，**44–94ms** |
+| **指标卡**（8 张） | 现在内存还剩多少？本套装占了多少？**微信占了多少**？有没有异常候选？ | 纯 Win32 API 采样，**44–94ms** |
 | **需要注意** | 哪些进程命中异常判据？在干活还是空转？ | 句柄/线程绝对阈值 + 同 exe 中位数倍数 |
+| **微信内存结构** | 微信的内存大头在哪？能省吗？ | 按进程名分三组（WMPF 容器 / 主进程 / 输入法） |
 | **进程组堆积** | 是不是历史会话没回收？先关哪个窗口？ | 按入口脚本聚类（宿主都活着时孤儿判据查不到） |
 | **可以做什么** | 4 条已知配方，现在能不能动、代价是什么 | 只展示命令，**不代你执行** |
 | **定时任务** | 3 个计划任务的触发器、上次/下次运行、参数 | `schtasks.exe` 查询，**0.1–0.5 秒** |
 | **历史管控记录** | 可用内存趋势、僵尸句柄趋势、异常候选趋势、动作流水 | 22 份体检报告 + 126 条回收日志 |
+
+> 🔴 **微信那张卡只报「占用」，不报「能省多少」**。
+> 因为实测两件事让「能省多少」这个数根本无法诚实给出：
+> ① 杀 WMPF 容器 → **15 秒被微信拉起**，可用内存反而 −0.22GB；
+> ② trim 工作集 → ABBA 差分实测净效应可用内存 **−0.68GB**（负收益）。
+> → 卡上直接给**唯一有效的动作**：微信 → 设置 → 通用 → 发现页管理 → 关小程序/视频号。
 
 ### 三条设计取舍
 
@@ -655,12 +702,16 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | `tools/fast_cmdline.py` | 一次 WMI 取全表命令行（供进程组聚类，20 秒缓存） | 普通 |
 | `tools/thread_handle_probe.py` | 线程/句柄探测（中位数倍数判据） | 普通 |
 | `tools/handle_type_breakdown.py` | 句柄**类型分解**（Event/Token/Process… + 已退出目标与存活目标分列） | 普通（需 Sysinternals Handle） |
-| `tools/check_doc_consistency.py` | 文档一致性核验（构成表加总 / 两文档同指标 / 已作废说法残留） | 普通 |
+| `tools/check_doc_consistency.py` | 文档一致性核验（构成表加总 / 两文档同指标 / **同指标同值且唯一** / 已作废说法残留 / skill 副本同步） | 普通 |
+| `tools/gate_negative_test_doc_consistency.py` | **上面那个门禁的负向验证**（8 场景：改数字/删数字/副本不同步） | 普通 |
 | `tools/codex_sandbox_cleanup.py` | Codex 沙箱泄漏定点回收 | 管理员 |
 | `tools/stuck_process_cleanup.py` | 挂死进程回收（explorer / 挂死命令行链 / 句柄泄漏） | 管理员 |
 | `tools/stale_session_cleanup.py` | **会话空壳回收**（已关闭会话窗口遗留的空壳，实测省 9.83GB） | 普通 |
 | `tools/hcs_ctl.py` | HCS compute system 枚举/属性（取证用） | 管理员 |
 | `tools/trim_experiment.py` | 复现「trim 只降 WS 不降 Private」的实验脚本 | 普通 |
+| `tools/trim_working_set.py` | trim 单次实验（筛低 CPU 进程 → `EmptyWorkingSet` → 前后对比 WS/可用/已提交） | 普通 |
+| `tools/trim_ab_test.py` | **ABBA 差分验证**（base→trim→base→trim，抵消时间漂移）——判定 trim 是否真有收益 | 普通 |
+| `tools/mmkv_dump.py` | 极简 MMKV 只读解析器（微信等 App 的本地 KV 存储取证） | 普通 |
 
 ## 已验证的泄漏配方（都有真实样本）
 
@@ -692,7 +743,7 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | 工具 | 定位 | 为什么不直接用 |
 |---|---|---|
 | **SysWatch**（GitHub） | 最接近的同类：psutil + Flask + AI 建议，能报「句柄泄漏 / 线程爆炸」 | **只读，永不处置**；判据是固定阈值（句柄>3000 / 线程>100），实测会把 System(8582)/msedge(9158) 一起误报；重度依赖 AI API |
-| **WinMemoryCleaner** | 托盘 RAM cleaner（5000+ stars） | 口径是「trim 工作集」= 已被本项目实测证伪（只降 WS 不降 Private） |
+| **WinMemoryCleaner** | 托盘 RAM cleaner（5000+ stars） | 口径是「trim 工作集」= 已被本项目 ABBA 差分实验证伪（净效应可用内存 −0.68GB / 已提交 +0.9GB） |
 | **Process Hacker / System Informer** | 进程管理器 | 只做**观察**，无泄漏判定与定点回收；内核驱动带来权限与安全负担 |
 | **wtop**（Rust TUI） | htop for Windows，线程/句柄面板做得很好 | 纯交互式 TUI，不产出可复核的**报告**，也不做处置 |
 | **Dr. Memory** | DynamoRIO 内存调试器，能查 handle 泄漏 | 需插桩、面向 C/C++ 开发者、不是常驻系统工具 |
