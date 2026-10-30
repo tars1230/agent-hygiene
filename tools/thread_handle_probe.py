@@ -53,6 +53,8 @@ import re
 import statistics
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 PS_EXE = os.path.join(
     os.environ.get("SystemRoot", r"C:\Windows"),
@@ -110,7 +112,7 @@ def _ps_json(script, timeout=120):
     pre = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-NonInteractive", "-Command", pre + script],
-                           capture_output=True, timeout=timeout)  # bytes 模式, 自行解码
+                           capture_output=True, timeout=timeout, creationflags=nowin.no_window())  # bytes 模式, 自行解码
     except Exception as e:
         print("[warn] PowerShell failed: %s" % e)
         return None

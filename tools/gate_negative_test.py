@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(HERE, "skill", "diagnostic-tool-trust", "scripts",
@@ -78,7 +80,7 @@ SCENARIOS = [
 
 def run_gate():
     p = subprocess.run([sys.executable, GATE], cwd=HERE,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, creationflags=nowin.no_window())
     return p.returncode, p.stdout
 
 

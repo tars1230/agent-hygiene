@@ -34,7 +34,8 @@ def all_cmdlines():
     )
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, timeout=90)
+                           capture_output=True, timeout=90,
+                           creationflags=nowin.no_window())
     except Exception:
         return {}
     out = (r.stdout or b"").decode("utf-8", "replace").strip()
@@ -57,4 +58,6 @@ def all_cmdlines():
 
 if __name__ == "__main__":
     cl = all_cmdlines()
-    print("取到 %d 个进程的命令�
+    print("取到 %d 个进程的命令行" % len(cl))
+    for pid, cmd in list(cl.items())[:5]:
+        print("  %-8d %s" % (pid, cmd[:120]))

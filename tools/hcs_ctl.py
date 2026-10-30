@@ -18,8 +18,11 @@ stop  : 走 computecore.dll 的 HcsTerminateComputeSystem（hcsdiag 只有 list�
 import ctypes
 import ctypes.wintypes as wt
 import json
+import os
 import subprocess
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 DLL = r"C:\Windows\System32\computecore.dll"
 d = ctypes.WinDLL(DLL)
@@ -110,7 +113,7 @@ def _list_via_hcsdiag():
     """
     try:
         p = subprocess.run(["hcsdiag", "list"], capture_output=True,
-                           timeout=30, encoding="utf-8", errors="replace")
+                           timeout=30, encoding="utf-8", errors="replace", creationflags=nowin.no_window())
     except FileNotFoundError:
         return None
     except Exception as e:

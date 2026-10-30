@@ -33,6 +33,7 @@ sys.path.insert(0, HERE)
 # 🔴 与 console_backend 同理：不能只靠 os.environ.get("LOCALAPPDATA")，
 #    IDE 托管 bash / 计划任务上下文里该变量可能是 None -> 日志会落错目录。
 from agent_hygiene_audit import _local_appdata  # noqa: E402
+import nowin  # noqa: E402
 
 LOG_DIR = os.path.join(_local_appdata(), "agent-hygiene", "logs")
 
@@ -66,7 +67,8 @@ def _run_schtasks_pairs(name):
     try:
         r = subprocess.run(
             ["schtasks.exe", "/query", "/tn", name, "/fo", "LIST", "/v"],
-            capture_output=True, timeout=30)
+            capture_output=True, timeout=30,
+            creationflags=nowin.no_window())
     except Exception:
         return None
     raw = r.stdout or b""
@@ -198,7 +200,8 @@ PY_EXE = os.path.join(
 def _run_ps(script, timeout=60):
     try:
         r = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, timeout=timeout)
+                           capture_output=True, timeout=timeout,
+                           creationflags=nowin.no_window())
         return (r.stdout or b"").decode("utf-8", "replace").strip()
     except Exception as e:
         return json.dumps({"error": str(e)})

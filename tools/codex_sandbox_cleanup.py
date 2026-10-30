@@ -52,6 +52,8 @@ import os
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 # ---------------- 判据表 ----------------
 CODEX_APP_NAMES = {
@@ -247,7 +249,7 @@ def hcs_info():
     """返回 (count, states, raw); hcsdiag 不可用时 count=None"""
     try:
         p = subprocess.run(["hcsdiag", "list"], capture_output=True, text=True,
-                           timeout=20, encoding="utf-8", errors="replace")
+                           timeout=20, encoding="utf-8", errors="replace", creationflags=nowin.no_window())
     except Exception as e:
         return None, [], "hcsdiag invoke failed: %s" % e
     raw = ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
@@ -273,7 +275,7 @@ def _ps(cmd, timeout=90):
         [PS_EXE, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
          "-Command", cmd],
         capture_output=True, text=True, timeout=timeout,
-        encoding="utf-8", errors="replace",
+        encoding="utf-8", errors="replace", creationflags=nowin.no_window(),
     )
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 

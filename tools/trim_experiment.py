@@ -8,6 +8,8 @@ import os
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 PSAPI = ctypes.WinDLL("psapi.dll")
 KERNEL32 = ctypes.WinDLL("kernel32.dll")
@@ -93,7 +95,7 @@ def main():
             [PS_EXE, "-NoProfile", "-Command",
              "Get-CimInstance Win32_Process | "
              "Select-Object ProcessId,ParentProcessId,WorkingSetSize | ConvertTo-Json -Compress"],
-            capture_output=True, timeout=30, **PS_ENC,
+            capture_output=True, timeout=30, **PS_ENC, creationflags=nowin.no_window(),
         )
         import json
         raw = _decode(ps.stdout)

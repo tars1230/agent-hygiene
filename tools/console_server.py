@@ -35,12 +35,21 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import console_backend as cb  # noqa: E402
+import nowin  # noqa: E402
 
 WEB_DIR = os.path.join(HERE, "console_web")
 
 # CPU 差分需要跨请求保持上一次采样
 _cpu_state = {}
 _lock = threading.Lock()
+
+
+def _say(*args):
+    """安全打印。pythonw.exe 下 sys.stdout 是 None，直接 print 会抛异常。"""
+    try:
+        print(*args)
+    except Exception:
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -113,10 +122,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/task/trigger":
             r = cb.subprocess.run(
-                [sys.executable, cb.TASK_SCRIPT, "set-trigger",
+                [nowin.py_exe(), cb.TASK_SCRIPT, "set-trigger",
                  data.get("name", ""), data.get("kind", ""),
                  data.get("at", "")],
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60,
+                creationflags=nowin.no_window())
             cb.tasks(force=True)   # 改完立刻失效缓存，下次读是新的
             try:
                 return self._send_json(json.loads(r.stdout.decode("utf-8", "replace")))
@@ -127,10 +137,11 @@ class Handler(BaseHTTPRequestHandler):
             # 🔴 这个开关会真的杀进程 -> 必须前端传显式确认位
             allow = bool(data.get("allow_kill_switch"))
             r = cb.subprocess.run(
-                [sys.executable, cb.TASK_SCRIPT, "set-args",
+                [nowin.py_exe(), cb.TASK_SCRIPT, "set-args",
                  data.get("name", ""), data.get("args", "")]
                 + (["--allow-kill-switch"] if allow else []),
-                capture_output=True, timeout=60)
+                capture_output=True, timeout=60,
+                creationflags=nowin.no_window())
             cb.tasks(force=True)
             try:
                 return self._send_json(json.loads(r.stdout.decode("utf-8", "replace")))
@@ -159,10 +170,10 @@ def main():
         s.settimeout(1.5)
         try:
             s.connect((a.host, a.port))
-            print("已在运行: http://%s:%d/" % (a.host, a.port))
+            _say("已在运行: http://%s:%d/" % (a.host, a.port))
             return
         except Exception:
-            print("未运行（端口 %d 空闲）" % a.port)
+            _say("未运行（端口 %d 空闲）" % a.port)
             return
         finally:
             s.close()
@@ -179,29 +190,33 @@ def main():
         if os.name == "nt":
             flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
                      | 0x08000000)  # 0x08000000 = CREATE_NO_WINDOW
+        # 🔴 用 pythonw.exe 启动服务本体：python.exe 一定会分配一个控制台，
+        #    即使加了 CREATE_NO_WINDOW 也只是**子进程**不受影响，
+        #    python.exe 自己仍会占一个控制台（Session 1 下 = 用户可见窗口）。
+        #    服务本体不需要 stdout（只写日志文件），所以可以换 pythonw。
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__),
+            [nowin.pyw_exe(), os.path.abspath(__file__),
              "--serve", "--port", str(a.port), "--host", a.host]
             + (["--open"] if a.open else []),
             creationflags=flags,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True)
-        print("进程刷新 · 本地控制台")
-        print("  地址: %s" % url)
-        print("  已后台启动（无控制台窗口）")
+        _say("进程刷新 · 本地控制台")
+        _say("  地址: %s" % url)
+        _say("  已后台启动（无控制台窗口）")
         return
 
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
-    print("进程刷新 · 本地控制台")
-    print("  地址: %s" % url)
-    print("  只监听本机，局域网访问不到")
+    _say("进程刷新 · 本地控制台")
+    _say("  地址: %s" % url)
+    _say("  只监听本机，局域网访问不到")
     if a.open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    print("  Ctrl+C 退出")
+    _say("  Ctrl+C 退出")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\n已退出")
+        _say("\n已退出")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import fast_probe as fp  # noqa: E402
+import nowin  # noqa: E402
 
 # 🔴 数据目录定位必须复用 agent_hygiene_audit 的 _local_appdata(),
 #    不能自己写 os.environ.get("LOCALAPPDATA") —— IDE 托管的 bash /
@@ -387,8 +388,9 @@ def tasks(force=False):
     if not force and now - _TASK_CACHE.get("_ts", 0) < 30:
         return _TASK_CACHE["data"]
     try:
-        r = subprocess.run([sys.executable, TASK_SCRIPT, "list"],
-                           capture_output=True, timeout=60)
+        r = subprocess.run([nowin.py_exe(), TASK_SCRIPT, "list"],
+                           capture_output=True, timeout=60,
+                           creationflags=nowin.no_window())
         data = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
     except Exception as e:
         data = {"error": str(e), "tasks": []}

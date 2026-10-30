@@ -39,6 +39,8 @@ import re
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 # Handle.exe 位置优先级：
 #   1) 环境变量 AGENT_HYGIENE_HANDLE_EXE
@@ -117,7 +119,7 @@ def ps_exe():
 def list_handles(handle_exe, pid, timeout=420):
     """调用 handle64.exe -p <pid> -a，返回 (原始文本, 行数)。"""
     cmd = [handle_exe, "-accepteula", "-p", str(pid), "-a"]
-    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    p = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=nowin.no_window())
     text = _decode(p.stdout or b"")
     # stderr 里是 banner（Copyright/Nthandle），stdout 才是句柄列表
     lines = [l for l in text.splitlines() if _type_of(l) is not None]
@@ -172,7 +174,7 @@ def process_handle_count(ps, pid):
               "if($p){ $p.HandleCount }" % int(pid))
     try:
         p = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, timeout=60)
+                           capture_output=True, timeout=60, creationflags=nowin.no_window())
         t = _decode(p.stdout or b"").strip()
         return int(t) if t.isdigit() else None
     except Exception:

@@ -35,6 +35,8 @@ import re
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 # 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
 #    sys.path[0] 只在「以脚本路径直接运行」时才是脚本目录，从别处 import 就找不到了。
@@ -166,7 +168,7 @@ def wmi_processes():
     try:
         p = subprocess.run([PS_EXE, "-NoProfile", "-NonInteractive", "-Command", cmd],
                            capture_output=True, text=True, timeout=120,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace", creationflags=nowin.no_window())
         data = json.loads(p.stdout or "[]")
         if isinstance(data, dict):
             data = [data]
@@ -235,7 +237,7 @@ def mem_global():
             [PS_EXE, "-NoProfile", "-Command",
              "$p=Get-CimInstance Win32_PerfRawData_PerfOS_Memory; "
              "'{0},{1}' -f ($p.CommittedBytes/1MB),($p.CommitLimit/1MB)"],
-            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace", creationflags=nowin.no_window())
         commit, limit = (out.stdout or "").strip().split(",")
         perf = (float(commit), float(limit))
     except Exception:
@@ -247,7 +249,7 @@ def mem_global():
 def hcs_state():
     try:
         p = subprocess.run(["hcsdiag", "list"], capture_output=True, text=True,
-                           timeout=20, encoding="utf-8", errors="replace")
+                           timeout=20, encoding="utf-8", errors="replace", creationflags=nowin.no_window())
     except Exception as e:
         return None, "hcsdiag failed: %s" % e
     raw = ((p.stdout or "") + "\n" + (p.stderr or "")).strip()

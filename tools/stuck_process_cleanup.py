@@ -49,6 +49,8 @@ import os
 import subprocess
 import sys
 import time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nowin  # noqa: E402
 
 # 🔴 同目录模块（thread_handle_probe）必须可导入 —— 用户可能从任意 cwd 调用本脚本。
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -130,7 +132,7 @@ def process_basics(pid):
         "[math]::Round($p.WorkingSet64/1MB,1) }" % pid)
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=30, **PS_ENC)
+                           capture_output=True, timeout=30, **PS_ENC, creationflags=nowin.no_window())
     except Exception:
         return None
     out = (r.stdout or "").strip()
@@ -156,7 +158,7 @@ def process_start(pid):
           "if ($c) { $c.ToString('yyyy-MM-ddTHH:mm:ss') }" % pid)
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=30, **PS_ENC)
+                           capture_output=True, timeout=30, **PS_ENC, creationflags=nowin.no_window())
         s = (r.stdout or "").strip()
         return datetime.datetime.fromisoformat(s) if s else None
     except Exception:
@@ -171,7 +173,7 @@ def list_procs(names):
           "$_.ParentProcessId, ($_.CommandLine -replace '\\|','/') }" % ns)
     try:
         r = subprocess.run([PS_EXE, "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=60, **PS_ENC)
+                           capture_output=True, timeout=60, **PS_ENC, creationflags=nowin.no_window())
     except Exception:
         return {}
     out = {}
@@ -245,7 +247,7 @@ def recipe_explorer(args):
             # 必须杀整个 shell 树: 单杀 explorer 后 Windows 会重建新的
             try:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                               capture_output=True, timeout=60, **PS_ENC)
+                               capture_output=True, timeout=60, **PS_ENC, creationflags=nowin.no_window())
                 killed += 1
             except Exception as e:
                 log("配方A: 重启 explorer PID=%d 失败: %s" % (pid, e))
@@ -254,7 +256,7 @@ def recipe_explorer(args):
         # Windows 会自动拉起 explorer; 若没起来手动启动
         if not list_procs({"explorer.exe"}):
             log("配方A: explorer 未自启, 手动拉起")
-            subprocess.run(["explorer.exe"], capture_output=True, timeout=30)
+            subprocess.run(["explorer.exe"], capture_output=True, timeout=30, creationflags=nowin.no_window())
             time.sleep(3)
         new = list_procs({"explorer.exe"})
         for pid in new:
@@ -340,7 +342,7 @@ def recipe_handle_leak(args):
         for pid in victims:
             try:
                 r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                                   capture_output=True, timeout=60, **PS_ENC)
+                                   capture_output=True, timeout=60, **PS_ENC, creationflags=nowin.no_window())
                 if r.returncode == 0:
                     ok += 1
             except Exception as e:
@@ -435,7 +437,7 @@ def recipe_git(args):
         for pid in victims:
             try:
                 r = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                                   capture_output=True, timeout=60, **PS_ENC)
+                                   capture_output=True, timeout=60, **PS_ENC, creationflags=nowin.no_window())
                 if r.returncode == 0:
                     ok += 1
             except Exception as e:
