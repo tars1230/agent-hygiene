@@ -203,15 +203,23 @@ def main():
             except Exception:
                 pass
 
-        # 🔴 真正脱离当前终端的做法：**派生子进程**并用 DETACHED_PROCESS。
+        # 🔴 真正脱离当前终端的做法：**派生子进程**并用 CREATE_NO_WINDOW。
         #    不能用 os._exit(0)——那会把整个进程连同服务线程一起杀掉，
         #    服务反而停了（实测踩过）。
         #    也不能只是 while True: sleep(3600)——那会让启动命令永远不返回，
         #    双击/计划任务场景下表现为「点了没反应」。
+        #
+        # 🔴🔴 2026-10-30 实测修正：**不要用 DETACHED_PROCESS**。
+        #    实测（父=pythonw 无控制台）：
+        #        无 flags                          → 闪窗
+        #        DETACHED_PROCESS|CREATE_NEW_PG    → 闪窗
+        #        DETACHED_PROCESS|CREATE_NO_WINDOW → **仍然闪窗**
+        #        只有 CREATE_NO_WINDOW              → 不闪
+        #    原因：DETACHED_PROCESS 强制子进程分配**全新**控制台（而非继承父的），
+        #    且会覆盖 CREATE_NO_WINDOW。两者同用比不用还糟。
         flags = 0
         if os.name == "nt":
-            flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                     | 0x08000000)  # 0x08000000 = CREATE_NO_WINDOW
+            flags = nowin.CREATE_NO_WINDOW
         # 🔴 用 pythonw.exe 启动服务本体：python.exe 一定会分配一个控制台，
         #    即使加了 CREATE_NO_WINDOW 也只是**子进程**不受影响，
         #    python.exe 自己仍会占一个控制台（Session 1 下 = 用户可见窗口）。

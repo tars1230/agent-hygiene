@@ -84,6 +84,7 @@ def main():
          "print('allocated', flush=True)\n"
          "time.sleep(120)\n"],
         stdout=subprocess.PIPE, text=True,
+        creationflags=nowin.no_window(),
     )
     child.stdout.readline()
     time.sleep(1.0)

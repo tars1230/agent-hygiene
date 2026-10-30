@@ -13,3 +13,9 @@ COMMIT_MSG.txt
 _scratch/
 _edge_case_test*.py
 _review_prompt.txt
+
+# 2026-10-30 消窗改造：本地备份目录与临时工具不入库
+.bak-*/
+tools/_audit_subproc.py
+tools/_restart_console.py
+tools/_exp_*.py

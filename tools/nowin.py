@@ -11,13 +11,24 @@ nowin.py —— 「启动子进程时不弹控制台窗口」的唯一入口
   `python.exe console_tasks.py list` + `schtasks.exe`，
   全都会在桌面闪出「管理员:」窗口。
 
-🔴 关键知识点：`creationflags=CREATE_NO_WINDOW` 是**唯一可靠**的抑制手段
-  · `-WindowStyle Hidden` 只是让 PowerShell 自己隐藏窗口，
-    但 Windows 可能先分配控制台再隐藏 → 仍有「分配→隐藏」的可见瞬间。
-  · `DETACHED_PROCESS` 会让子进程脱离父进程的控制台，
-    但和管道重定向组合时行为不可靠。
-  · `CREATE_NO_WINDOW` 明确告诉 Windows「不要为这个子进程分配控制台」，
-    且不与 stdout/stderr 管道重定向冲突。→ 本项目统一用这个。
+🔴 关键知识点（2026-10-30 受控实测结论，勿再推翻）：
+  父进程 = pythonw.exe（真正无控制台，等价 Electron GUI 父进程）时：
+
+  | spawn 方式                       | 桌面上是否闪窗 |
+  |----------------------------------|----------------|
+  | 无 flags                          | 🔴 闪          |
+  | `-WindowStyle Hidden`（仅 PS 参数）| 🔴 闪          |
+  | `DETACHED_PROCESS`                | 🔴 闪          |
+  | `DETACHED_PROCESS|CREATE_NO_WINDOW`| 🔴 **仍闪**    |
+  | `CREATE_NO_WINDOW`                | ✅ 不闪        |
+
+  · `CREATE_NO_WINDOW` 是**唯一可靠**的抑制手段，且与 stdout/stderr 管道重定向不冲突。
+  · 🔴 `DETACHED_PROCESS` 会**覆盖** `CREATE_NO_WINDOW`：它强制子进程分配
+    一个**全新**的控制台（原先继承父控制台），于是必然在 Session 1 桌面上显示。
+    两者同用比不用还糟 —— 本项目 2026-10-30 的 console_server.py 就踩过这个坑。
+  · `-WindowStyle Hidden` 只是 PowerShell 自己隐藏窗口，分配控制台的瞬间仍可见。
+  · 父进程若**自身有控制台**（如 python.exe），子进程会直接继承 → 不会闪；
+    所以做实验时必须用 pythonw 当父进程，否则测不出真实行为。
 
 🔴 为什么不用 pythonw.exe 跑子进程
   pythonw.exe 没有 sys.stdout（print 会直接失败或丢输出），
