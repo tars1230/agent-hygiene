@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>进程刷新 · 本地控制台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="health-dot"></span>
+    <h1>进程刷新</h1>
+    <span class="sub">Process Refresh · 本地控制台</span>
+  </div>
+  <div class="topbar-right">
+    <span class="meta" id="sample-meta">—</span>
+    <button class="btn btn-primary" id="btn-refresh">重新体检</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ============ 状态总览 ============ -->
+  <section class="cards" id="cards">
+    <div class="card">
+      <p class="label">可用内存</p>
+      <p class="value" id="m-avail">—</p>
+      <p class="hint" id="m-avail-hint">—</p>
+    </div>
+    <div class="card">
+      <p class="label">内存压力</p>
+      <p class="value" id="m-load">—</p>
+      <p class="hint" id="m-load-hint">—</p>
+    </div>
+    <div class="card">
+      <p class="label">已提交</p>
+      <p class="value" id="m-commit">—</p>
+      <p class="hint" id="m-commit-hint">—</p>
+    </div>
+    <div class="card" id="card-suite">
+      <p class="label">本套装占用</p>
+      <p class="value" id="m-suite">—</p>
+      <p class="hint" id="m-suite-hint">—</p>
+    </div>
+    <div class="card" id="card-anomaly">
+      <p class="label">异常候选</p>
+      <p class="value" id="m-anomaly">—</p>
+      <p class="hint" id="m-anomaly-hint">—</p>
+    </div>
+    <div class="card">
+      <p class="label">句柄总量</p>
+      <p class="value" id="m-handles">—</p>
+      <p class="hint" id="m-handles-hint">—</p>
+    </div>
+    <div class="card">
+      <p class="label">进程数</p>
+      <p class="value" id="m-proc">—</p>
+      <p class="hint" id="m-proc-hint">—</p>
+    </div>
+  </section>
+
+  <!-- ============ 需要注意 ============ -->
+  <section class="panel" id="panel-findings">
+    <div class="panel-head">
+      <h2>需要注意</h2>
+      <span class="tag" id="findings-count">—</span>
+    </div>
+    <div id="findings-body"></div>
+  </section>
+
+  <!-- ============ 进程组堆积 ============ -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>进程组堆积</h2>
+      <span class="badge-warn" id="groups-warn" hidden>宿主都活着，孤儿判据查不到</span>
+    </div>
+    <p class="panel-note">
+      同一个入口脚本起了很多套 = 历史会话没被回收。<b>先关掉宿主里对应的会话窗口</b>，宿主会带走整组；别逐个杀。
+    </p>
+    <div id="groups-body"></div>
+  </section>
+
+  <!-- ============ 建议 ============ -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>可以做什么</h2>
+      <span class="tag" id="recipes-count">—</span>
+    </div>
+    <p class="panel-note">
+      下面每条都会标出<b>代价</b>。带「不可逆」标记的需要你自己权衡。
+    </p>
+    <div id="recipes-body"></div>
+  </section>
+
+  <!-- ============ 定时任务 ============ -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>定时任务</h2>
+      <button class="btn btn-ghost" id="btn-tasks">刷新</button>
+    </div>
+    <p class="panel-note">
+      改触发频率随时可以。<b>「自动终止句柄泄漏」这个开关</b>会让任务真的杀掉微信（丢登录态），
+      所以默认关着，需要你在这里明确勾选才会打开。
+    </p>
+    <div id="tasks-body"><p class="empty">加载中…</p></div>
+  </section>
+
+  <!-- ============ 历史管控 ============ -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>历史管控记录</h2>
+      <span class="tag" id="hist-stats">—</span>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">可用内存趋势<span class="chart-unit">MB</span></div>
+      <canvas id="chart-avail" role="img" aria-label="可用内存历史趋势折线图"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">僵尸句柄趋势<span class="chart-unit">个 · 指向已退出进程</span></div>
+      <canvas id="chart-zombie" role="img" aria-label="僵尸句柄历史趋势折线图"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">异常候选数量趋势<span class="chart-unit">个</span></div>
+      <canvas id="chart-anom" role="img" aria-label="异常候选数量历史趋势折线图"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-title">管控动作记录<span class="chart-unit">最近 40 条</span></div>
+      <div id="log-body"></div>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

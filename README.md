@@ -453,6 +453,68 @@ python tools\stuck_process_cleanup.py --apply
 
 体检报告每份都自带「与上次对比」，连续跑第二次起就能看到趋势和「疑似新泄漏」报警。
 
+## 本地控制台（Windows 上点开就能用，不用问 AI）
+
+> **什么时候用**：你觉得卡的时候，点开看一眼。
+> 不需要先问 AI、不需要等对话链路、不需要记命令。
+
+```powershell
+# 启动（后台，无控制台窗口），浏览器自动打开
+python tools\console_server.py --bg --open
+
+# 只检查是否已在运行
+python tools\console_server.py --check
+```
+
+打开后是 `http://127.0.0.1:8765/`，六个区域：
+
+| 区域 | 回答什么问题 | 数据来源 |
+|---|---|---|
+| **指标卡**（7 张） | 现在内存还剩多少？本套装占了多少？有没有异常候选？ | 纯 Win32 API 采样，**44–94ms** |
+| **需要注意** | 哪些进程命中异常判据？在干活还是空转？ | 句柄/线程绝对阈值 + 同 exe 中位数倍数 |
+| **进程组堆积** | 是不是历史会话没回收？先关哪个窗口？ | 按入口脚本聚类（宿主都活着时孤儿判据查不到） |
+| **可以做什么** | 4 条已知配方，现在能不能动、代价是什么 | 只展示命令，**不代你执行** |
+| **定时任务** | 3 个计划任务的触发器、上次/下次运行、参数 | `schtasks.exe` 查询，**0.1–0.5 秒** |
+| **历史管控记录** | 可用内存趋势、僵尸句柄趋势、异常候选趋势、动作流水 | 22 份体检报告 + 126 条回收日志 |
+
+### 三条设计取舍
+
+**1. 极轻：采样是纯 Win32 API，不是 PowerShell。**
+`fast_probe.py` 直接调 `CreateToolhelp32Snapshot` / `GetProcessHandleCount` /
+`GetProcessMemoryInfo`，**不 spawn 任何子进程**。实测 653–666 个进程采样 **44–94ms**，
+数据常驻 73KB。每 10 秒轮询一次 ≈ **0.02% 单核 CPU**。
+（对照：旧的 `thread_handle_probe.py` 走 `Get-Process`，一次 **1.5 秒**。）
+
+**2. 极轻：连「读计划任务」都不走 PowerShell。**
+`Get-ScheduledTask` 单任务实测 **5.23 秒**（PowerShell 裸启动就要 1.55 秒），
+读 3 个任务就是 15 秒起——用户体感是「卡住了」。
+改用 `schtasks.exe`：**0.10 秒**，快 52 倍。
+> 🔴 换实现必须做**差分测试**，不是读代码。本项目两条路径都实现了
+> （`list_tasks_schtasks` / `list_tasks_powershell`），并有 `_t_diff.py` 断言字段一致。
+> 差分测试抓到过两个真 bug：`'6:00:00'[:5] == '6:00:'` 导致 06:00 被读成 05:10；
+> schtasks 的 LIST 格式会**重复输出**触发器字段，用 dict 存会覆盖掉前一个触发器。
+
+**3. 安全：所有「会动系统」的动作都不在 HTTP 层执行。**
+服务只**展示**命令与代价，真正执行由你在本机终端手动跑。
+理由：浏览器里的一个 POST 就能杀进程 = 一个 CSRF 就能杀进程。
+唯一允许 HTTP 写入的是**计划任务的触发器/参数**，
+且改 `--kill-handle-leak`（会真的杀微信、丢登录态）需要**双保险**：
+前端 `confirm()` 明示代价 + 后端 `allow_kill_switch` 参数校验。
+任务操作**白名单**限定 3 个，每次改动写 `%LOCALAPPDATA%\agent-hygiene\logs\tasks.log`。
+
+### 端口与暴露面
+
+- 只监听 `127.0.0.1`——**局域网访问不到**，不对外暴露。
+- 端口 8765 可用 `--port` 改。
+
+### 三个已知口径陷阱（都实测踩过）
+
+| 陷阱 | 现象 | 正确做法 |
+|---|---|---|
+| `LOCALAPPDATA` 环境变量可能为 `None` | IDE 托管 bash / 计划任务上下文里回退到家目录，历史报告解析出 **0 条** | 复用 `agent_hygiene_audit._local_appdata()`，不自己写 |
+| 「建议命令」不等于「已执行」 | 日志里的 `建议命令: taskkill ...` 被算成「已终止」，终止次数虚高 6 次 | 按「清理完成, 成功 N/M」判真杀，建议行归 report |
+| 「没有该字段」≠「值为 0」 | 旧报告没有 4b 章节，异常候选数被当成 0，趋势图造出假的「零异常」低谷 | 取不到就 `None`，图上画成断点 |
+
 ## 可选：注册计划任务
 
 或者手动（管理员 PowerShell）：
@@ -524,6 +586,11 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | 工具 | 用途 | 权限 |
 |---|---|---|
 | `tools/agent_hygiene_audit.py` | 体检 + 线程/句柄维度 + 对比报告 | 普通 |
+| `tools/console_server.py` | **本地控制台**（浏览器入口：状态/建议/定时任务/历史图表） | 普通 |
+| `tools/console_backend.py` | 控制台后端逻辑（状态聚合 / 配方 / 历史解析） | 普通 |
+| `tools/console_tasks.py` | 计划任务读写（schtasks 快路径 + PowerShell 兜底） | 改任务时需管理员 |
+| `tools/fast_probe.py` | 纯 Win32 API 快速采样（**44–94ms**，不 spawn 子进程） | 普通 |
+| `tools/fast_cmdline.py` | 一次 WMI 取全表命令行（供进程组聚类，20 秒缓存） | 普通 |
 | `tools/thread_handle_probe.py` | 线程/句柄探测（中位数倍数判据） | 普通 |
 | `tools/handle_type_breakdown.py` | 句柄**类型分解**（Event/Token/Process… + 已退出目标与存活目标分列） | 普通（需 Sysinternals Handle） |
 | `tools/check_doc_consistency.py` | 文档一致性核验（构成表加总 / 两文档同指标 / 已作废说法残留） | 普通 |
