@@ -207,6 +207,7 @@ Windows 工作站做定期体检。
 | `trim_working_set.py` | trim 单次实验（筛低 CPU 进程 → `EmptyWorkingSet` → 前后对比） | 只读 |
 | `trim_ab_test.py` | **ABBA 差分验证**（base→trim→base→trim）判定 trim 是否真有收益 | 只读 |
 | `mmkv_dump.py` | 极简 MMKV 只读解析器（App 本地 KV 取证） | 只读 |
+| `trash_to_recycle_bin.py` | 把文件移入**回收站**（可恢复，非永久删除）—— 个人目录清理的唯一安全路径 | 普通 |
 
 仅支持 Windows。报告默认写 `%LOCALAPPDATA%\agent-hygiene\reports\`，回收日志在 `..\logs\`。
 

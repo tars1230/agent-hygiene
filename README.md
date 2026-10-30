@@ -712,6 +712,7 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | `tools/trim_working_set.py` | trim 单次实验（筛低 CPU 进程 → `EmptyWorkingSet` → 前后对比 WS/可用/已提交） | 普通 |
 | `tools/trim_ab_test.py` | **ABBA 差分验证**（base→trim→base→trim，抵消时间漂移）——判定 trim 是否真有收益 | 普通 |
 | `tools/mmkv_dump.py` | 极简 MMKV 只读解析器（微信等 App 的本地 KV 存储取证） | 普通 |
+| `tools/trash_to_recycle_bin.py` | 把文件移入**回收站**（可恢复，非永久删除）—— PowerShell 的 Add-Type/COM 都被安全策略拦时的唯一可行路径 | 普通 |
 
 ## 已验证的泄漏配方（都有真实样本）
 
