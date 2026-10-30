@@ -31,6 +31,7 @@ import ctypes.wintypes as wt
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -63,6 +64,9 @@ def _local_appdata():
 DEFAULT_REPORT_DIR = os.path.join(_local_appdata(), "agent-hygiene", "reports")
 MIN_ORPHAN_AGE_H = 1.0
 ORPHAN_MIN_PRIV_MB = 50.0
+# 会话堆积判据: 同一入口脚本起这么多实例, 且合计占用这么多内存
+GROUP_MIN_INSTANCES = 5
+GROUP_MIN_PRIV_MB = 200.0
 RENDERER_BIG_MB = 500.0
 
 # 内核/系统进程: 没有 Private 概念(cb=0), 放进榜单只会污染排序
@@ -385,6 +389,82 @@ def main():
     else:
         out("- 无孤儿候选（Electron/Helper 子进程但宿主 main 已死 且 ≥%.0fMB）" % ORPHAN_MIN_PRIV_MB)
         out("- 说明: 顶层应用「父进程已退出」是常态(启动器退出), 不算孤儿, 不列。")
+
+    # ---- 3b 进程组聚类（会话堆积）----
+    # 🔴 为什么需要: 「孤儿」判据只能查「父进程已死」。但本机最大的一笔内存占用
+    #    (72 个 node.exe ≈ 8GB) 是**父进程 WorkBuddy 全都活着**的会话堆积——
+    #    孤儿判据 100% 查不到, 逐个进程看也永远看不出来。
+    #    唯一能看见的办法: 按**入口脚本**聚类, 看「同一个脚本起了多少套」。
+    #    实测: rea.mjs / cli.cjs / mcp-server.mjs / npx-cli.js / start.mjs
+    #    各 13~14 个 = 14 组「5 件套」, 24 小时内起了 14 轮。
+    out()
+    out("### 3b 进程组聚类（同一入口脚本起了多套 = 会话堆积）")
+    out()
+    out("- 🔴 这不是泄漏，是**会话组没被回收**：宿主进程都活着，孤儿判据查不到。")
+    out("- 判据: 同一入口脚本 ≥%d 个实例, 且该组 Private 合计 ≥%.0fMB。" %
+        (GROUP_MIN_INSTANCES, GROUP_MIN_PRIV_MB))
+    groups = {}
+    for p in procs:
+        cmd = p.get("cmd") or ""
+        # 🔴 必须排除「包装壳」: 实测同一组 MCP server 会同时出现
+        #    cmd.exe /d /s /c "..." 包装层 + 真正的 node.exe 执行层。
+        #    两层都带同一个脚本路径, 若按进程计数会**双倍虚高**
+        #    (实测 mcp-server.mjs: cmd.exe 14 + node.exe 14 = 28, 真实是 14 组)。
+        #    → 只认「自己就是解释器」的那一层: 进程名是 node/deno/bun/python 等。
+        name = (p.get("Name") or "").lower()
+        if name in ("cmd.exe", "conhost.exe", "powershell.exe", "pwsh.exe", "bash.exe",
+                    "sh.exe", "wscript.exe", "cscript.exe"):
+            continue
+        m = re.search(r"[\\/]([^\s\\/]+\.(?:js|cjs|mjs))", cmd)
+        if not m:
+            continue
+        script = m.group(1)
+        # 🔴 同名脚本可能来自不同包（实测 mcp-server.mjs 同时存在于
+        #    rea-agents 与 plugins/cache/workbuddy-builtin 两个来源）。
+        #    只按文件名合并会把两个不同的组算成一组, 实例数虚高一倍。
+        #    → 补上包路径做区分。
+        pkg = ""
+        pm = re.search(r"[\\/](node_modules[\\/]([^\s\\/]+))", cmd)
+        if pm:
+            pkg = pm.group(1)
+        else:
+            pm = re.search(r"[\\/]plugins[\\/]cache[\\/]([^\s\\/]+)", cmd)
+            if pm:
+                pkg = "cache\\" + pm.group(1)
+        groups.setdefault(pkg + "\\" + script, []).append(p)
+    hot = []
+    for script, items in groups.items():
+        if len(items) < GROUP_MIN_INSTANCES:
+            continue
+        tot = sum(p["priv"] for p in items)
+        if tot < GROUP_MIN_PRIV_MB:
+            continue
+        hot.append((script, items, tot))
+    hot.sort(key=lambda x: -x[2])
+    if hot:
+        out("| 入口脚本 | 实例数 | Priv合计MB | 平均MB | 最早启动 | 最晚启动 |")
+        out("|---|---|---|---|---|---|")
+        for script, items, tot in hot:
+            ages = []
+            for p in items:
+                c = p.get("created")
+                if c:
+                    ages.append(c)
+            e = time.strftime("%m-%d %H:%M", time.localtime(min(ages))) if ages else "?"
+            l = time.strftime("%m-%d %H:%M", time.localtime(max(ages))) if ages else "?"
+            # 只显示最后两段路径, 免得表格被长路径撑爆
+            short = script.replace("/", "\\").split("\\")
+            short = "\\".join(short[-2:]) if len(short) > 2 else script
+            out("| %s | %d | %.1f | %.1f | %s | %s |"
+                % (short, len(items), tot, tot / len(items), e, l))
+        out()
+        out("- **解读**: 每个「组」= 一个会话起的一整套进程。组数远大于你今天实际开过的会话数")
+        out("  → 就是历史会话没回收。处置顺序: **先关掉宿主的对应会话/窗口**（宿主会带走整组）,")
+        out("  再考虑直接 taskkill。**别逐个杀**——杀了还会被宿主再拉起。")
+        out("- ⚠️ 本项**只报告不动手**：宿主可能正在用其中某几个。")
+    else:
+        out("- 无会话堆积候选（同一入口脚本 ≥%d 个且合计 ≥%.0fMB）"
+            % (GROUP_MIN_INSTANCES, GROUP_MIN_PRIV_MB))
 
     # vmmem / HCS
     states, raw = hcs_state()

@@ -149,6 +149,7 @@ python tools/stuck_process_cleanup.py --apply --sample-sec 3
 - 进程家族 Top（按程序汇总，标注 Electron 的 `--type=` 子进程结构）
 - **线程 / 句柄维度**（独立于内存排序，见上文问题二）
 - 孤儿检测（只判「渲染器/工具子进程还在，但宿主主进程已经死了」）
+- **进程组聚类**（同一入口脚本起了多少套 = 会话堆积；宿主都活着时孤儿判据查不到，只有聚类能看见）
 - HCS 沙箱遗留检测（`vmmem` 没有 worker = 已证实的泄漏模式）
 - 空转 vs 在干活（多次采样 CPU 时间增量）
 - 与上次报告对比（家族 ΔPrivate 趋势，>300MB 且 1.5x 才标「疑似新泄漏」）
@@ -541,6 +542,13 @@ python skill/diagnostic-tool-trust/scripts/check_skill_consistency.py
 | 4 | 每天固定时间多出一串 git 进程且永不退出 | 计划任务里的 `git push` 因凭据提示被吞而永久挂起（8 天累积 56 进程） | `taskkill` + 修脚本（超时 + `credential.interactive=never` + 显式代理） | 2026-10-29 |
 | 5 | 内存看着正常，但某进程句柄数 19 万 | Weixin 主进程句柄累积未释放（191435 句柄 = 同 exe 同伴中位数 243 的 **788 倍**，存活 190+ 小时）。**分解到类型层后定根因**：29641 个僵尸 Process 句柄指向已退出的进程，其中 **21286 个指向已退出的 explorer（pid 13092）**、8354 个指向 pid 20764、1 个指向 pid 28932，连带 65949 个重复 Token + 87031 个 Event | 治本 = 重启 explorer 消掉泄漏源；Weixin 侧默认只报告，`--kill-handle-leak` 才动手 | 2026-10-29 |
 | 6 | playwright 浏览器下载完 3.1GB 但进程不退 | `playwright-cli install-browser` 挂死（CPU=0、无网络连接，链为 sh.exe → node.exe） | `taskkill /T`（配方按**命令行模式**匹配，不是按进程名） | 2026-10-29 |
+| 7 | 内存占了大头但按进程名找不到元凶（node 家族占 8GB） | **会话堆积**：每个会话起一整套 5 进程（`rea.mjs` / `cli.cjs` / `mcp-server.mjs` / `npx-cli.js` / `start.mjs`），历史会话没回收 → 14 组 × 5 = 69 个 node | 先关掉宿主里对应的会话窗口（宿主会带走整组），再考虑 taskkill | 2026-10-30 |
+
+**配方 7 的关键教训**：**宿主都活着时，孤儿判据 100% 查不到**——73 个 node 的父进程全是活着的 WorkBuddy。
+唯一能看见的办法是**按入口脚本聚类**（「同一个脚本起了多少套」）。逐个进程看永远看不出来，
+因为单个 node 只有 40–250MB，混在一堆里毫不显眼。
+🔴 聚类时还要**排除包装壳**：同一组 MCP server 会同时出现 `cmd.exe /c "..."` 包装层
+和真正的 `node.exe` 执行层，按进程计数会**双倍虚高**（实测 mcp-server.mjs：14+14=28，真实是 14 组）。
 
 **配方 3 的关键教训**：explorer 的泄漏**在任务管理器里几乎看不见**——它的 WS 只有 260–452MB，看「内存」列完全正常；吃掉的是 commit。**必须看线程数/句柄数**（9.6 万线程 / 21 万句柄）。
 
