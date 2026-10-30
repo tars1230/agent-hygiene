@@ -102,6 +102,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"recipes": cb.recipes(st), "status": st})
         if path == "/api/tasks":
             return self._send_json(cb.tasks())
+        if path == "/api/task-inventory":
+            # 全量计划任务 + 可关闭性研判（只读）
+            return self._send_json(cb.task_inventory())
         if path == "/api/history":
             return self._send_json(cb.history())
         if path == "/api/snapshot":
@@ -147,6 +150,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(json.loads(r.stdout.decode("utf-8", "replace")))
             except Exception:
                 return self._send_json({"error": "任务管理返回异常"}, 500)
+
+        if path == "/api/task-inventory/state":
+            # 🔴 启用/禁用任意第三方任务（可逆）。
+            #   安全规则硬编码在 task_control.py：
+            #   · \Microsoft\* 系统任务 → 硬拒绝
+            #   · 必须前端传 confirm=true
+            #   · 只做启停，不提供删除
+            name = data.get("name", "")
+            enable = bool(data.get("enable"))
+            confirm = bool(data.get("confirm"))
+            return self._send_json(cb.task_state(name, enable, confirm=confirm))
 
         return self._send_json({"error": "not found"}, 404)
 

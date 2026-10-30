@@ -99,8 +99,9 @@ def _run_schtasks_pairs(name):
 # 🔴 「登陆时」是 schtasks 的用字（不是「登录时」）
 _ST_KIND = {"每天": "Daily", "每周": "Weekly", "登陆时": "Logon",
             "登录时": "Logon", "一次性": "Once"}
-_ST_MODE = {"就绪": "Ready", "运行中": "Running", "已计划": "Ready",
-            "禁用": "Disabled", "未计划": "Ready"}
+_ST_MODE = {"就绪": "Ready", "运行中": "Running", "正在运行": "Running",
+            "已计划": "Ready", "禁用": "Disabled", "已禁用": "Disabled",
+            "未计划": "Ready"}
 
 
 def list_tasks_schtasks():
@@ -167,14 +168,25 @@ def list_tasks_schtasks():
         except Exception:
             res = None
 
+        # 🔴 身份不能硬编码。实测 2026-10-30：这几个任务早已改成 SYSTEM 运行，
+        #    但这里一直写死 UserId=os.environ["USERNAME"] / LogonType="Interactive"，
+        #    面板上显示的运行身份是错的（会误导判断「是否在桌面会话弹窗」）。
+        #    schtasks 的 LIST 输出里「作为用户运行」才是真值，直接读它。
+        user_id = (first.get("作为用户运行") or first.get("Run As User") or "").strip()
+        if not user_id:
+            user_id = os.environ.get("USERNAME", "")
+        logon_type = "Interactive"
+        if user_id.upper() in ("SYSTEM", "NT AUTHORITY\\SYSTEM", "S-1-5-18"):
+            logon_type = "ServiceAccount"
+
         out.append({
             "Name": n, "Missing": False,
             "State": _ST_MODE.get(first.get("模式") or "",
                                   first.get("模式") or "Ready"),
             "LastRun": last, "NextRun": nxt, "LastResult": res,
             "Execute": exe, "Arguments": argstr,
-            "UserId": os.environ.get("USERNAME", ""),
-            "LogonType": "Interactive",
+            "UserId": user_id,
+            "LogonType": logon_type,
             "Triggers": trigs,
         })
     for t in out:

@@ -229,6 +229,106 @@ td.name { font-weight: 500; }
 .log.report .m { color: var(--text-2); }
 .log.skip .m { color: var(--warn); }
 
+/* ---------- 系统定时任务全景 ---------- */
+.inv-summary {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 8px; margin-bottom: 12px;
+}
+@media (max-width: 900px) { .inv-summary { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 620px) { .inv-summary { grid-template-columns: repeat(2, 1fr); } }
+.inv-stat {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); padding: 9px 11px; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.inv-stat:hover { border-color: var(--border-2); }
+.inv-stat.active { border-color: var(--text); background: var(--surface); }
+.inv-stat .n {
+  font-size: 20px; font-weight: 500; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.inv-stat .k { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+.inv-stat.attention .n { color: var(--warn); }
+.inv-stat.orphan .n { color: var(--danger); }
+.inv-stat.keep .n { color: var(--ok); }
+.inv-stat.idle .n { color: var(--info); }
+.inv-stat.system .n { color: var(--text-3); }
+
+.inv-filters {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding-bottom: 12px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.chip {
+  font-family: inherit; font-size: 12px; padding: 4px 12px;
+  border-radius: 20px; border: 1px solid var(--border-2);
+  background: var(--surface); color: var(--text-2); cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.chip:hover { background: var(--surface-2); color: var(--text); }
+.chip.active {
+  background: var(--text); color: #fff; border-color: var(--text);
+}
+.chip .c {
+  font-family: var(--mono); font-size: 11px; opacity: .7; margin-left: 4px;
+}
+.inv-search {
+  flex: 1; min-width: 160px; font-family: inherit; font-size: 12px;
+  padding: 5px 11px; border: 1px solid var(--border-2);
+  border-radius: 20px; background: var(--surface); color: var(--text);
+}
+.inv-search:focus { outline: none; border-color: var(--text-3); }
+
+.inv-item {
+  border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: var(--radius-sm); margin-bottom: 8px; padding: 12px 14px;
+  background: var(--surface);
+}
+.inv-item.level-review { border-left-color: #ba7517; }
+.inv-item.level-orphan { border-left-color: var(--danger); }
+.inv-item.level-idle { border-left-color: var(--info); }
+.inv-item.level-keep { border-left-color: var(--ok); }
+.inv-item.level-disabled { border-left-color: var(--text-3); }
+.inv-item.level-system { border-left-color: var(--border); background: var(--surface-2); }
+
+.inv-item .i-head {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+}
+.inv-item .i-name { font-weight: 500; font-size: 13px; }
+.inv-item .i-path {
+  font-family: var(--mono); font-size: 11px; color: var(--text-3);
+  word-break: break-all;
+}
+.inv-item .i-verdict {
+  font-size: 12px; margin-top: 5px; color: var(--text-2);
+}
+.inv-item .i-reasons {
+  margin: 6px 0 0; padding-left: 17px; font-size: 11.5px; color: var(--text-3);
+}
+.inv-item .i-reasons li { margin: 1px 0; }
+.inv-item .i-meta {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 16px; margin-top: 9px; font-size: 11.5px; color: var(--text-2);
+}
+.inv-item .i-meta b { color: var(--text); font-weight: 500; }
+.inv-item .i-exe {
+  font-family: var(--mono); font-size: 11px; color: var(--text-2);
+  background: var(--surface-2); padding: 5px 8px; border-radius: 5px;
+  margin-top: 8px; word-break: break-all;
+}
+.inv-item .i-actions { margin-top: 10px; display: flex; gap: 7px; align-items: center; }
+.inv-item .i-actions .hint { font-size: 11px; color: var(--text-3); }
+.badge {
+  font-size: 10.5px; padding: 2px 8px; border-radius: 20px;
+  background: var(--surface-2); color: var(--text-2); white-space: nowrap;
+}
+.badge.lv-review { background: var(--warn-bg); color: var(--warn); }
+.badge.lv-orphan { background: var(--danger-bg); color: var(--danger); }
+.badge.lv-idle { background: var(--info-bg); color: var(--info); }
+.badge.lv-keep { background: var(--ok-bg); color: var(--ok); }
+.badge.lv-disabled { background: var(--surface-2); color: var(--text-3); }
+.badge.lv-system { background: var(--info-bg); color: var(--info); }
+
 /* ---------- toast ---------- */
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);

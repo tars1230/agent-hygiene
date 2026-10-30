@@ -324,6 +324,207 @@ function bindTaskEvents() {
   });
 }
 
+/* ------------------------------------------------- 系统定时任务全景 */
+let invData = null;
+let invFilter = 'attention';
+let invQuery = '';
+let invTimer = null;
+
+/* 筛选口径：每个 chip 对应一个「集合谓词」 */
+const INV_FILTERS = {
+  attention: (t) => t.level === 'orphan' || t.level === 'review',
+  review:    (t) => t.level === 'review',
+  idle:      (t) => t.level === 'idle',
+  orphan:    (t) => t.level === 'orphan',
+  keep:      (t) => t.level === 'keep',
+  disabled:  (t) => t.level === 'disabled',
+  system:    (t) => t.level === 'system',
+  all:       () => true,
+};
+
+const INV_LEVEL_LABEL = {
+  system: '系统自带', keep: '在用', review: '待确认',
+  idle: '闲置', orphan: '可关闭', disabled: '已禁用'
+};
+
+async function loadInventory() {
+  const box = $('inv-body');
+  const btn = $('btn-inv-refresh');
+  if (btn) btn.disabled = true;
+  if (!invData) box.innerHTML = '<p class="empty">全量扫描中…（约 3 秒）</p>';
+  try {
+    const d = await getJSON('/api/task-inventory');
+    if (d.error) {
+      box.innerHTML = '<p class="empty">采集失败：' + escapeHtml(d.error) + '</p>';
+      return;
+    }
+    invData = d;
+    $('inv-scan-time').textContent = '扫描于 ' + (d.scannedAt || '—');
+    renderInventory();
+  } catch (e) {
+    box.innerHTML = '<p class="empty">加载失败：' + escapeHtml(e.message) + '</p>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderInventory() {
+  const box = $('inv-body');
+  if (!invData) return;
+  const s = invData.summary || {};
+  const tasks = invData.tasks || [];
+
+  /* --- 摘要卡片（同时就是筛选器） ---
+     🔴 6 个维度互不重叠，不做「需要关注 = orphan + review」这种求和卡：
+        求和卡会跟子项数字重复（可关闭=0 时需要关注=待确认=8），
+        反而让人以为有两个不同的 8。合计信息交给「任务总数」和 chips 的计数。 */
+  const stats = [
+    { k: 'orphan',    n: s.orphan || 0,    label: '可安全关闭', cls: 'orphan' },
+    { k: 'review',    n: s.review || 0,    label: '待人工确认', cls: 'attention' },
+    { k: 'idle',      n: s.idle || 0,      label: '闲置零开销', cls: 'idle' },
+    { k: 'keep',      n: s.keep || 0,      label: '第三方在用', cls: 'keep' },
+    { k: 'disabled',  n: s.disabled || 0,  label: '已禁用',     cls: '' },
+    { k: 'system',    n: s.system || 0,    label: '系统自带',   cls: 'system' },
+  ];
+  $('inv-summary').innerHTML = stats.map(x =>
+    `<div class="inv-stat ${x.cls} ${invFilter === x.k ? 'active' : ''}" data-inv-filter="${x.k}">
+      <div class="n">${x.n}</div><div class="k">${x.label}</div>
+    </div>`).join('');
+
+  /* --- chip 计数 --- */
+  document.querySelectorAll('#inv-filters .chip').forEach(c => {
+    const f = c.dataset.filter;
+    const n = tasks.filter(INV_FILTERS[f] || (() => false)).length;
+    let cnt = c.querySelector('.c');
+    if (!cnt) {
+      cnt = document.createElement('span');
+      cnt.className = 'c';
+      c.appendChild(cnt);
+    }
+    cnt.textContent = n;
+    c.classList.toggle('active', invFilter === f);
+  });
+
+  /* --- 列表 --- */
+  const q = invQuery.trim().toLowerCase();
+  let list = tasks.filter(INV_FILTERS[invFilter] || (() => false));
+  if (q) {
+    list = list.filter(t =>
+      (t.name || '').toLowerCase().includes(q) ||
+      (t.path || '').toLowerCase().includes(q) ||
+      (t.exe || '').toLowerCase().includes(q) ||
+      (t.comment || '').toLowerCase().includes(q));
+  }
+
+  if (!list.length) {
+    box.innerHTML = '<p class="empty">这个筛选下没有任务。' +
+      (q ? '（换个关键词，或清空搜索）' : '') + '</p>';
+    bindInventoryEvents();
+    return;
+  }
+
+  box.innerHTML = list.map(t => renderInvItem(t)).join('');
+  bindInventoryEvents();
+}
+
+function renderInvItem(t) {
+  const lv = t.level;
+  const badge = `<span class="badge lv-${lv}">${INV_LEVEL_LABEL[lv] || lv}</span>`;
+  const owner = t.owner === 'Microsoft'
+    ? '<span class="badge">系统</span>'
+    : '<span class="badge">第三方</span>';
+
+  const reasons = (t.reasons || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+
+  /* 身份说明：SYSTEM 不在桌面会话 */
+  let userTxt = escapeHtml(t.user || '—');
+  if (t.user && /SYSTEM/i.test(t.user)) userTxt += '（后台，不弹窗）';
+  else if (t.user && /INTERACTIVE/i.test(t.user)) userTxt += '（桌面会话，可能弹窗）';
+
+  const period = t.periodMin ? `每 ${t.periodMin} 分钟` : '—';
+
+  /* 🔴 系统任务不给按钮；已禁用的第三方给「启用」 */
+  let actions = '';
+  if (t.owner !== 'Microsoft') {
+    if (t.state === 'Disabled') {
+      actions = `<button class="btn btn-sm inv-toggle" data-inv-name="${escapeHtml(t.path)}"
+                   data-inv-enable="1">启用</button>
+                 <span class="hint">当前已禁用，启用后按原配置运行</span>`;
+    } else {
+      actions = `<button class="btn btn-sm inv-toggle" data-inv-name="${escapeHtml(t.path)}"
+                   data-inv-enable="0">禁用</button>
+                 <span class="hint">禁用可随时恢复，配置不会丢</span>`;
+    }
+  } else {
+    actions = '<span class="hint">系统自带任务不提供修改入口，避免误伤更新 / 证书等功能</span>';
+  }
+
+  return `<div class="inv-item level-${lv}">
+    <div class="i-head">
+      <span class="i-name">${escapeHtml(t.name)}</span>
+      ${badge}${owner}
+      <span class="i-path">${escapeHtml(t.path)}</span>
+    </div>
+    <div class="i-verdict">${escapeHtml(t.verdict || '')}</div>
+    ${reasons ? `<ul class="i-reasons">${reasons}</ul>` : ''}
+    <div class="i-meta">
+      <div>状态：<b>${escapeHtml(t.state || '—')}</b></div>
+      <div>上次运行：<b>${escapeHtml(t.lastRun || '—')}</b></div>
+      <div>下次运行：<b>${escapeHtml(t.nextRun || '—')}</b></div>
+      <div>频率：<b>${period}</b></div>
+      <div>运行身份：<b>${userTxt}</b></div>
+      <div>上次结果：<b>${t.result === null || t.result === undefined ? '—' : t.result}</b>
+        （${escapeHtml(t.resultMeaning || '')}）</div>
+    </div>
+    ${t.exe ? `<div class="i-exe">${escapeHtml(t.exe)}${t.args ? ' ' + escapeHtml(t.args) : ''}</div>` : ''}
+    <div class="i-actions">${actions}</div>
+  </div>`;
+}
+
+function bindInventoryEvents() {
+  document.querySelectorAll('[data-inv-filter]').forEach(el => {
+    el.addEventListener('click', () => {
+      invFilter = el.dataset.invFilter;
+      renderInventory();
+    });
+  });
+  document.querySelectorAll('#inv-filters .chip').forEach(c => {
+    c.addEventListener('click', () => {
+      invFilter = c.dataset.filter;
+      renderInventory();
+    });
+  });
+  document.querySelectorAll('.inv-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.invName;
+      const enable = btn.dataset.invEnable === '1';
+      const act = enable ? '启用' : '禁用';
+      if (!confirm(
+        `确认${act}这个计划任务？\n\n${name}\n\n` +
+        (enable
+          ? '启用后它会按原有触发条件重新开始运行。'
+          : '禁用是可逆的：任务配置、触发器、参数全部保留，随时可以启用回来。'))) {
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await postJSON('/api/task-inventory/state',
+          { name, enable, confirm: true });
+        if (r.ok) {
+          toast(`已${act}：${name.split('\\').pop()}`, 'ok');
+          await loadInventory();
+        } else {
+          toast('失败：' + (r.error || '未知'), 'err');
+          btn.disabled = false;
+        }
+      } catch (e) {
+        toast('失败：' + e.message, 'err');
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
 /* ---------------------------------------------------------------- 历史 */
 async function loadHistory() {
   try {
@@ -496,6 +697,8 @@ async function refreshAll() {
   // 🔴 计划任务单独异步拉：实测首次要 6.3 秒（Windows 计划任务接口慢），
   //    串在这里会把整页首屏都卡住 6 秒。任务面板自己显示加载态。
   loadTasks();
+  // 🔴 全量任务盘点也要 2.6 秒，同样不串进首屏；独立低频刷新。
+  loadInventory();
 }
 
 function startAuto() {
@@ -506,10 +709,25 @@ function startAuto() {
       $('health-dot').className = 'dot ' + (st.findings.length ? 'warn' : 'ok');
     }).catch(() => {});
   }, 10000);
+
+  // 🔴 盘点接口单次要 2.6 秒（schtasks 全量扫描），不能跟 10 秒的
+  //    状态轮询同频 —— 后端已有 60 秒缓存，前端再压到 60 秒即可。
+  if (invTimer) clearInterval(invTimer);
+  invTimer = setInterval(loadInventory, 60000);
 }
 
 $('btn-refresh').addEventListener('click', refreshAll);
 $('btn-tasks').addEventListener('click', loadTasks);
+
+const _invSearch = $('inv-search');
+if (_invSearch) {
+  _invSearch.addEventListener('input', () => {
+    invQuery = _invSearch.value;
+    renderInventory();
+  });
+}
+const _btnInvRefresh = $('btn-inv-refresh');
+if (_btnInvRefresh) _btnInvRefresh.addEventListener('click', loadInventory);
 
 refreshAll();
 startAuto();

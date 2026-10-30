@@ -130,6 +130,38 @@
     <div id="tasks-body"><p class="empty">加载中…</p></div>
   </section>
 
+  <!-- ============ 系统定时任务全景 ============ -->
+  <section class="panel" id="panel-inventory">
+    <div class="panel-head">
+      <h2>系统定时任务全景</h2>
+      <span class="tag" id="inv-scan-time">—</span>
+      <button class="btn btn-ghost" id="btn-inv-refresh">重新扫描</button>
+    </div>
+    <p class="panel-note">
+      扫的是 Windows 计划任务全量（默认 255 个，含系统自带）。
+      每条都给了<b>建议动作和理由</b>；<b>「可关闭」= 程序已卸载但任务还在，是纯残留</b>。
+      这里只能<b>启用 / 禁用</b>（可逆，配置全保留），<b>不能删除</b>；
+      <b>系统自带任务一律不给按钮</b>，避免误伤更新、证书这类系统功能。
+      <br>「待人工确认」= 判不出来或需要你判断的，<b>不是结论，别照着关</b>。
+    </p>
+
+    <div class="inv-summary" id="inv-summary"></div>
+
+    <div class="inv-filters" id="inv-filters">
+      <button class="chip active" data-filter="attention">需要关注</button>
+      <button class="chip" data-filter="review">待确认</button>
+      <button class="chip" data-filter="idle">闲置零开销</button>
+      <button class="chip" data-filter="orphan">可关闭</button>
+      <button class="chip" data-filter="keep">在用</button>
+      <button class="chip" data-filter="disabled">已禁用</button>
+      <button class="chip" data-filter="system">系统自带</button>
+      <button class="chip" data-filter="all">全部</button>
+      <input type="search" class="inv-search" id="inv-search" placeholder="搜索任务名或程序路径…">
+    </div>
+
+    <div id="inv-body"><p class="empty">加载中…（全量扫描约 3 秒）</p></div>
+  </section>
+
   <!-- ============ 历史管控 ============ -->
   <section class="panel">
     <div class="panel-head">
